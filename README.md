@@ -26,10 +26,31 @@ URESTIC_ADMIN_USERNAME=admin
 URESTIC_ADMIN_PASSWORD=change-this-password
 ```
 
-启动服务：
+使用源码构建并启动：
 
 ```bash
 docker compose up -d --build
+```
+
+也可以直接使用 Docker Hub 镜像：
+
+```yaml
+services:
+  urestic:
+    image: jiemo9527/urestic:latest
+    container_name: urestic
+    ports:
+      - "8080:8080"
+    environment:
+      - URESTIC_AUTH_ENABLED=true
+      - URESTIC_ADMIN_USERNAME=admin
+      - URESTIC_ADMIN_PASSWORD=change-this-password
+    volumes:
+      - ./data:/app/data
+      - ./backups:/backups
+      - ./sources:/sources:ro
+      - ./restore:/restore
+    restart: unless-stopped
 ```
 
 打开 Web UI：
