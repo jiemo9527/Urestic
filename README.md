@@ -37,7 +37,7 @@ docker compose up -d --build
 ```yaml
 services:
   urestic:
-    image: jiemo9527/urestic:latest
+    image: wanxve0000/urestic:latest
     container_name: urestic
     ports:
       - "8080:8080"
