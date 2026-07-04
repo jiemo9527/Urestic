@@ -1,7 +1,12 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"os"
+	"strings"
 
 	"github.com/urestic/urestic/backend/internal/auth"
 	"github.com/urestic/urestic/backend/internal/config"
@@ -15,6 +20,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if handleCommand(cfg) {
+		return
+	}
 
 	database, err := db.Open(cfg)
 	if err != nil {
@@ -40,4 +48,50 @@ func main() {
 	if err := router.Run(cfg.Addr); err != nil {
 		log.Fatalf("server stopped: %v", err)
 	}
+}
+
+func handleCommand(cfg config.Config) bool {
+	if len(os.Args) < 2 {
+		return false
+	}
+	switch os.Args[1] {
+	case "reset-admin-password":
+		if err := resetAdminPassword(cfg, os.Args[2:]); err != nil {
+			log.Fatalf("failed to reset admin password: %v", err)
+		}
+		fmt.Println("admin password reset successfully")
+		return true
+	case "help", "--help", "-h":
+		printUsage()
+		return true
+	default:
+		return false
+	}
+}
+
+func resetAdminPassword(cfg config.Config, args []string) error {
+	var password string
+	switch len(args) {
+	case 1:
+		if args[0] == "--stdin" {
+			value, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				return err
+			}
+			password = strings.TrimRight(string(value), "\r\n")
+		} else {
+			password = args[0]
+		}
+	default:
+		return errors.New("usage: urestic reset-admin-password <new-password> or urestic reset-admin-password --stdin")
+	}
+	_, err := auth.ResetPassword(cfg.DataDir, password)
+	return err
+}
+
+func printUsage() {
+	fmt.Println(`Usage:
+  urestic
+  urestic reset-admin-password <new-password>
+  urestic reset-admin-password --stdin`)
 }

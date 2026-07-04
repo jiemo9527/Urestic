@@ -57,3 +57,8 @@ func (s *Store) Upsert(ctx context.Context, key string, value string, secret boo
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value, secret = excluded.secret, updated_at = excluded.updated_at`, key, value, secretValue, now)
 	return err
 }
+
+func (s *Store) Delete(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_settings WHERE key = ?`, key)
+	return err
+}

@@ -96,21 +96,29 @@ func (m *Manager) ChangePassword(currentPassword string, newPassword string) err
 	if !m.validCredentials(m.cfg.AdminUsername, currentPassword) {
 		return errors.New("current password is invalid")
 	}
-	newPassword = strings.TrimSpace(newPassword)
-	if len(newPassword) < 8 {
-		return errors.New("new password must be at least 8 characters")
-	}
-
-	hash := sha256.Sum256([]byte(newPassword))
-	encoded := "sha256:" + hex.EncodeToString(hash[:])
-	if err := os.MkdirAll(m.cfg.DataDir, 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(passwordHashPath(m.cfg.DataDir), []byte(encoded), 0o600); err != nil {
+	encoded, err := ResetPassword(m.cfg.DataDir, newPassword)
+	if err != nil {
 		return err
 	}
 	m.passwordHash = encoded
 	return nil
+}
+
+func ResetPassword(dataDir string, newPassword string) (string, error) {
+	newPassword = strings.TrimSpace(newPassword)
+	if len(newPassword) < 8 {
+		return "", errors.New("new password must be at least 8 characters")
+	}
+
+	hash := sha256.Sum256([]byte(newPassword))
+	encoded := "sha256:" + hex.EncodeToString(hash[:])
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(passwordHashPath(dataDir), []byte(encoded), 0o600); err != nil {
+		return "", err
+	}
+	return encoded, nil
 }
 
 func (m *Manager) VerifyToken(token string) (User, bool) {
@@ -171,6 +179,9 @@ func (m *Manager) validCredentials(username string, password string) bool {
 	username = strings.TrimSpace(username)
 	if subtle.ConstantTimeCompare([]byte(username), []byte(m.cfg.AdminUsername)) != 1 {
 		return false
+	}
+	if hash := loadPasswordHash(m.cfg.DataDir); hash != "" {
+		m.passwordHash = hash
 	}
 
 	if hash := strings.TrimSpace(m.passwordHash); hash != "" {

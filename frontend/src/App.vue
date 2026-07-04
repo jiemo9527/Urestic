@@ -743,8 +743,15 @@ async function exportSettings() {
   feedback.value = ''
   try {
     const config = await exportConfig()
+    config.client = {
+      generatedFiles: generatedFiles.value,
+      selectedGeneratedFileName: selectedGeneratedFileName.value,
+      theme: theme.value,
+      locale: locale.value,
+      sourceDirCandidatesText: builderForm.sourceDirCandidatesText
+    }
     downloadTextFile(`urestic-config-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(config, null, 2) + '\n', 'application/json;charset=utf-8')
-    feedback.value = '配置已导出。导出文件包含 secret，请按敏感文件保存。'
+    feedback.value = '恢复包已导出。文件包含 secret、rclone.conf 和已生成脚本，请按敏感文件保存。'
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -766,13 +773,40 @@ async function importSettings(event: Event) {
   feedback.value = ''
   try {
     const parsed = JSON.parse(await file.text()) as ConfigExport
+    if (parsed.formatVersion >= 2 && !window.confirm('导入恢复包会覆盖同名配置，并删除恢复包中不存在的仓库、通知、默认变量和 rclone.conf。确认继续？')) return
     const result = await importConfig(parsed)
     await loadData()
-    feedback.value = `导入完成：仓库新增 ${result.repositoriesCreated}，跳过 ${result.repositoriesSkipped}；通知新增 ${result.notificationsCreated}，跳过 ${result.notificationsSkipped}`
+    applyClientConfig(parsed)
+    feedback.value = `恢复完成：仓库新增 ${result.repositoriesCreated}，覆盖 ${result.repositoriesUpdated}，删除 ${result.repositoriesDeleted}；通知新增 ${result.notificationsCreated}，覆盖 ${result.notificationsUpdated}，删除 ${result.notificationsDeleted}；默认变量恢复 ${result.defaultVariablesRestored}，删除 ${result.defaultVariablesDeleted}；rclone.conf ${result.rcloneConfigRestored ? '已恢复' : result.rcloneConfigRemoved ? '已移除' : '未变化'}`
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
     pending.value = ''
+  }
+}
+
+function applyClientConfig(config: ConfigExport) {
+  const client = config.client
+  if (!client) return
+  if (Array.isArray(client.generatedFiles)) {
+    generatedFiles.value = client.generatedFiles.filter((file) => file.name && typeof file.content === 'string').map((file) => ({
+      name: file.name,
+      language: file.language || 'text',
+      content: file.content,
+      savedAt: file.savedAt || new Date().toISOString()
+    }))
+    selectedGeneratedFileName.value = generatedFiles.value.some((file) => file.name === client.selectedGeneratedFileName) ? client.selectedGeneratedFileName || '' : generatedFiles.value[0]?.name || ''
+    persistGeneratedFiles()
+  }
+  if (client.theme === 'dark' || client.theme === 'light') {
+    theme.value = client.theme
+    applyTheme(theme.value)
+  }
+  if (client.locale === 'zh-CN' || client.locale === 'en-US') {
+    switchLanguage(client.locale)
+  }
+  if (typeof client.sourceDirCandidatesText === 'string') {
+    builderForm.sourceDirCandidatesText = client.sourceDirCandidatesText
   }
 }
 
@@ -1098,13 +1132,13 @@ onUnmounted(() => {
           </section>
         </article>
         <article class="card settings-panel">
-          <div class="section-title"><p class="eyebrow">backup</p><h2>导入 / 导出配置</h2><p>导出包含仓库密码、云存储 key、通知 token；导入只新增缺失名称，遇到同名仓库或通知会跳过。</p></div>
+          <div class="section-title"><p class="eyebrow">backup</p><h2>导入 / 导出恢复包</h2><p>导出包含仓库、通知、默认变量、rclone.conf、已生成脚本和前端偏好；导入会按恢复包覆盖同名项并删除多余项。</p></div>
           <div class="action-row settings-actions">
-            <button class="primary" type="button" :disabled="pending === 'export-config'" @click="exportSettings">{{ pending === 'export-config' ? '导出中...' : '导出配置 JSON' }}</button>
-            <button class="ghost" type="button" :disabled="pending === 'import-config'" @click="chooseImportFile">{{ pending === 'import-config' ? '导入中...' : '导入配置 JSON' }}</button>
+            <button class="primary" type="button" :disabled="pending === 'export-config'" @click="exportSettings">{{ pending === 'export-config' ? '导出中...' : '导出恢复包 JSON' }}</button>
+            <button class="ghost" type="button" :disabled="pending === 'import-config'" @click="chooseImportFile">{{ pending === 'import-config' ? '导入中...' : '导入恢复包 JSON' }}</button>
             <input ref="importFileInput" class="hidden-file" type="file" accept="application/json,.json" @change="importSettings" />
           </div>
-          <p class="warning">配置导出文件等同于明文凭据备份，不要上传到公开仓库或发给不可信对象。</p>
+          <p class="warning">恢复包等同于明文凭据备份，且导入会覆盖当前配置；不要上传到公开仓库或发给不可信对象。</p>
         </article>
         <form class="card settings-panel" @submit.prevent="submitPasswordChange">
           <h3>修改 WebUI 密码</h3>

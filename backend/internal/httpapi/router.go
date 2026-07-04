@@ -75,10 +75,12 @@ type rcloneRemote struct {
 }
 
 type configExport struct {
-	FormatVersion int                  `json:"formatVersion"`
-	ExportedAt    string               `json:"exportedAt"`
-	Repositories  []repositoryExport   `json:"repositories"`
-	Notifications []notificationExport `json:"notifications"`
+	FormatVersion    int                  `json:"formatVersion"`
+	ExportedAt       string               `json:"exportedAt"`
+	Repositories     []repositoryExport   `json:"repositories"`
+	Notifications    []notificationExport `json:"notifications"`
+	DefaultVariables map[string]string    `json:"defaultVariables"`
+	RcloneConfig     rcloneConfigExport   `json:"rcloneConfig"`
 }
 
 type repositoryExport struct {
@@ -95,6 +97,14 @@ type notificationExport struct {
 	Type     string            `json:"type"`
 	Settings map[string]string `json:"settings"`
 }
+
+type rcloneConfigExport struct {
+	Included bool   `json:"included"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+}
+
+const maxRcloneConfigBytes = 1024 * 1024
 
 type generateScriptRequest struct {
 	RepositoryID string `json:"repositoryId"`
@@ -845,12 +855,24 @@ func (s server) exportConfig(c *gin.Context) {
 			Settings: settings,
 		})
 	}
+	defaultVariables, err := s.defaultVariables(c.Request.Context(), false)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "CONFIG_EXPORT_FAILED", "默认变量读取失败。")
+		return
+	}
+	rcloneConfig, err := exportRcloneConfig(s.cfg.RcloneConfig)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "CONFIG_EXPORT_FAILED", "rclone.conf 读取失败。")
+		return
+	}
 
 	ok(c, configExport{
-		FormatVersion: 1,
-		ExportedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-		Repositories:  repositoriesExport,
-		Notifications: notificationsExport,
+		FormatVersion:    2,
+		ExportedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		Repositories:     repositoriesExport,
+		Notifications:    notificationsExport,
+		DefaultVariables: defaultVariables,
+		RcloneConfig:     rcloneConfig,
 	})
 }
 
@@ -860,14 +882,36 @@ func (s server) importConfig(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body.")
 		return
 	}
-	if request.FormatVersion != 1 {
-		fail(c, http.StatusBadRequest, "UNSUPPORTED_CONFIG_VERSION", "只支持导入 formatVersion=1 的配置文件。")
+	if request.FormatVersion != 1 && request.FormatVersion != 2 {
+		fail(c, http.StatusBadRequest, "UNSUPPORTED_CONFIG_VERSION", "只支持导入 formatVersion=1 或 formatVersion=2 的配置文件。")
 		return
 	}
+	restoreMode := request.FormatVersion >= 2
 	repositoriesCreated := 0
+	repositoriesUpdated := 0
+	repositoriesDeleted := 0
 	repositoriesSkipped := 0
 	notificationsCreated := 0
+	notificationsUpdated := 0
+	notificationsDeleted := 0
 	notificationsSkipped := 0
+	defaultVariablesRestored := 0
+	defaultVariablesDeleted := 0
+	rcloneConfigRestored := false
+	rcloneConfigRemoved := false
+
+	existingRepositories := map[string]repositories.Repository{}
+	if restoreMode {
+		existing, err := s.repos.List(c.Request.Context())
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "CONFIG_IMPORT_FAILED", "仓库配置读取失败。")
+			return
+		}
+		for _, item := range existing {
+			existingRepositories[item.Name] = item
+		}
+	}
+	desiredRepositories := map[string]struct{}{}
 
 	for _, item := range request.Repositories {
 		params, code, message := s.repositoryParams(repositoryRequest{
@@ -882,6 +926,17 @@ func (s server) importConfig(c *gin.Context) {
 			fail(c, http.StatusBadRequest, code, message)
 			return
 		}
+		desiredRepositories[params.Name] = struct{}{}
+		if restoreMode {
+			if existing, ok := existingRepositories[params.Name]; ok {
+				if _, err := s.repos.Update(c.Request.Context(), existing.ID, params); err != nil {
+					s.handleRepositoryError(c, err)
+					return
+				}
+				repositoriesUpdated++
+				continue
+			}
+		}
 		if _, err := s.repos.Create(c.Request.Context(), params); err != nil {
 			if errors.Is(err, repositories.ErrDuplicateName) {
 				repositoriesSkipped++
@@ -892,6 +947,31 @@ func (s server) importConfig(c *gin.Context) {
 		}
 		repositoriesCreated++
 	}
+	if restoreMode {
+		for name, item := range existingRepositories {
+			if _, ok := desiredRepositories[name]; ok {
+				continue
+			}
+			if err := s.repos.Delete(c.Request.Context(), item.ID); err != nil && !errors.Is(err, repositories.ErrNotFound) {
+				s.handleRepositoryError(c, err)
+				return
+			}
+			repositoriesDeleted++
+		}
+	}
+
+	existingNotifications := map[string]notifications.Channel{}
+	if restoreMode {
+		existing, err := s.notify.List(c.Request.Context())
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "CONFIG_IMPORT_FAILED", "通知配置读取失败。")
+			return
+		}
+		for _, item := range existing {
+			existingNotifications[item.Name] = item
+		}
+	}
+	desiredNotifications := map[string]struct{}{}
 
 	for _, item := range request.Notifications {
 		params, code, message := s.notificationParams(notificationRequest{
@@ -903,6 +983,17 @@ func (s server) importConfig(c *gin.Context) {
 			fail(c, http.StatusBadRequest, code, message)
 			return
 		}
+		desiredNotifications[params.Name] = struct{}{}
+		if restoreMode {
+			if existing, ok := existingNotifications[params.Name]; ok {
+				if _, err := s.notify.Update(c.Request.Context(), existing.ID, params); err != nil {
+					s.handleNotificationError(c, err)
+					return
+				}
+				notificationsUpdated++
+				continue
+			}
+		}
 		if _, err := s.notify.Create(c.Request.Context(), params); err != nil {
 			if errors.Is(err, notifications.ErrDuplicateName) {
 				notificationsSkipped++
@@ -913,13 +1004,91 @@ func (s server) importConfig(c *gin.Context) {
 		}
 		notificationsCreated++
 	}
+	if restoreMode {
+		for name, item := range existingNotifications {
+			if _, ok := desiredNotifications[name]; ok {
+				continue
+			}
+			if err := s.notify.Delete(c.Request.Context(), item.ID); err != nil && !errors.Is(err, notifications.ErrNotFound) {
+				s.handleNotificationError(c, err)
+				return
+			}
+			notificationsDeleted++
+		}
+
+		var err error
+		defaultVariablesRestored, defaultVariablesDeleted, err = s.restoreDefaultVariables(c.Request.Context(), request.DefaultVariables)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "CONFIG_IMPORT_FAILED", err.Error())
+			return
+		}
+		rcloneConfigRestored, rcloneConfigRemoved, err = restoreRcloneConfig(s.cfg.RcloneConfig, request.RcloneConfig)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "CONFIG_IMPORT_FAILED", err.Error())
+			return
+		}
+	}
 
 	ok(c, gin.H{
-		"repositoriesCreated":  repositoriesCreated,
-		"repositoriesSkipped":  repositoriesSkipped,
-		"notificationsCreated": notificationsCreated,
-		"notificationsSkipped": notificationsSkipped,
+		"repositoriesCreated":      repositoriesCreated,
+		"repositoriesUpdated":      repositoriesUpdated,
+		"repositoriesDeleted":      repositoriesDeleted,
+		"repositoriesSkipped":      repositoriesSkipped,
+		"notificationsCreated":     notificationsCreated,
+		"notificationsUpdated":     notificationsUpdated,
+		"notificationsDeleted":     notificationsDeleted,
+		"notificationsSkipped":     notificationsSkipped,
+		"defaultVariablesRestored": defaultVariablesRestored,
+		"defaultVariablesDeleted":  defaultVariablesDeleted,
+		"rcloneConfigRestored":     rcloneConfigRestored,
+		"rcloneConfigRemoved":      rcloneConfigRemoved,
 	})
+}
+
+func exportRcloneConfig(path string) (rcloneConfigExport, error) {
+	result := rcloneConfigExport{Path: path}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return result, nil
+		}
+		return result, err
+	}
+	if info.IsDir() {
+		return result, nil
+	}
+	if info.Size() > maxRcloneConfigBytes {
+		return result, fmt.Errorf("rclone.conf 超过 %d bytes，未导出", maxRcloneConfigBytes)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return result, err
+	}
+	result.Included = true
+	result.Content = string(content)
+	return result, nil
+}
+
+func restoreRcloneConfig(path string, item rcloneConfigExport) (bool, bool, error) {
+	if item.Included {
+		if len([]byte(item.Content)) > maxRcloneConfigBytes {
+			return false, false, fmt.Errorf("rclone.conf 超过 %d bytes，未导入", maxRcloneConfigBytes)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return false, false, errors.New("rclone 配置目录创建失败")
+		}
+		if err := os.WriteFile(path, []byte(item.Content), 0o600); err != nil {
+			return false, false, errors.New("rclone.conf 写入失败")
+		}
+		return true, false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, errors.New("rclone.conf 删除失败")
+	}
+	return false, true, nil
 }
 
 func (s server) changePassword(c *gin.Context) {
@@ -1349,6 +1518,53 @@ func (s server) defaultVariables(ctx context.Context, redacted bool) (map[string
 		values[item.Key] = item.Value
 	}
 	return values, nil
+}
+
+func (s server) restoreDefaultVariables(ctx context.Context, values map[string]string) (int, int, error) {
+	normalized := normalizeVariables(values)
+	for key := range normalized {
+		if !defaultVariableAllowed(key) {
+			return 0, 0, errors.New("不支持的默认变量: " + key)
+		}
+	}
+	currentItems, err := s.settings.List(ctx)
+	if err != nil {
+		return 0, 0, errors.New("默认变量读取失败")
+	}
+	current := map[string]struct{}{}
+	for _, item := range currentItems {
+		if defaultVariableAllowed(item.Key) {
+			current[item.Key] = struct{}{}
+		}
+	}
+	restored := 0
+	for key, value := range normalized {
+		if value == "" || value == "********" {
+			continue
+		}
+		secret := defaultVariableSecret(key)
+		stored := value
+		if secret {
+			encrypted, err := s.secrets.Encrypt(value)
+			if err != nil {
+				return restored, 0, errors.New("默认变量加密失败")
+			}
+			stored = encrypted
+		}
+		if err := s.settings.Upsert(ctx, key, stored, secret); err != nil {
+			return restored, 0, errors.New("默认变量保存失败")
+		}
+		delete(current, key)
+		restored++
+	}
+	deleted := 0
+	for key := range current {
+		if err := s.settings.Delete(ctx, key); err != nil {
+			return restored, deleted, errors.New("默认变量删除失败")
+		}
+		deleted++
+	}
+	return restored, deleted, nil
 }
 
 func rememberLatest(items map[string]time.Time, key string, value time.Time) {

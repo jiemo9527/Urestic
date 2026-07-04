@@ -61,6 +61,22 @@ http://localhost:8080
 
 登录账号使用 `.env` 中的 `URESTIC_ADMIN_USERNAME` 和 `URESTIC_ADMIN_PASSWORD`。
 
+## 重置管理员密码
+
+如果忘记 Web UI 管理员密码，可以在容器内重置：
+
+```bash
+docker compose exec urestic urestic reset-admin-password 'new-strong-password'
+```
+
+也可以通过标准输入传入，避免密码进入 shell history：
+
+```bash
+printf '%s' 'new-strong-password' | docker compose exec -T urestic urestic reset-admin-password --stdin
+```
+
+重置会写入 `/app/data/admin_password.sha256`。服务端会在登录时重新读取该文件，通常无需重启容器。
+
 ## 数据目录
 
 默认持久化目录：
@@ -141,13 +157,25 @@ Docker Compose 默认把宿主机 rclone 配置只读挂载到：
 
 需要导入时，进入“设置”页面点击“复制/新建 conf”。Urestic 只展示 remote 数量和名称，不在页面编辑 remote secret。
 
-## 配置导入导出
+## 恢复包导入导出
 
-进入“设置”页面可以导出或导入 Urestic 配置。
+进入“设置”页面可以导出或导入 Urestic 恢复包。
 
-导出的 JSON 包含仓库密码、云存储 key、通知 token，请按敏感文件保存。
+恢复包包含：
 
-导入时遇到同名仓库或通知渠道会跳过，不覆盖已有配置。
+- 仓库配置和 restic password。
+- 云存储 key。
+- 通知渠道和通知 token。
+- 默认变量。
+- `/app/data/rclone/rclone.conf` 内容。
+- 浏览器本地已生成脚本列表。
+- 主题、语言、备份源候选等前端偏好。
+
+恢复包不包含 Web UI 管理员密码。需要恢复管理员密码时使用 `urestic reset-admin-password`。
+
+导入 `formatVersion=2` 恢复包时会覆盖同名仓库和通知，并删除恢复包中不存在的仓库、通知、默认变量和 rclone.conf，以尽量恢复到导出时状态。
+
+恢复包等同于明文凭据备份，请按敏感文件保存，不要上传到公开仓库或发给不可信对象。
 
 ## 常用命令
 

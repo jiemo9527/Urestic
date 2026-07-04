@@ -210,6 +210,9 @@ export interface ConfigExport {
   exportedAt: string
   repositories: RepositoryExport[]
   notifications: NotificationExport[]
+  defaultVariables?: Record<string, string>
+  rcloneConfig?: RcloneConfigExport
+  client?: ClientConfigExport
 }
 
 export interface RepositoryExport {
@@ -227,11 +230,33 @@ export interface NotificationExport {
   settings: Record<string, string>
 }
 
+export interface RcloneConfigExport {
+  included: boolean
+  path: string
+  content: string
+}
+
+export interface ClientConfigExport {
+  generatedFiles?: Array<GeneratedFile & { savedAt: string }>
+  selectedGeneratedFileName?: string
+  theme?: string
+  locale?: string
+  sourceDirCandidatesText?: string
+}
+
 export interface ConfigImportResult {
   repositoriesCreated: number
+  repositoriesUpdated: number
+  repositoriesDeleted: number
   repositoriesSkipped: number
   notificationsCreated: number
+  notificationsUpdated: number
+  notificationsDeleted: number
   notificationsSkipped: number
+  defaultVariablesRestored: number
+  defaultVariablesDeleted: number
+  rcloneConfigRestored: boolean
+  rcloneConfigRemoved: boolean
 }
 
 export async function loginAdmin(username: string, password: string): Promise<LoginResult> {
