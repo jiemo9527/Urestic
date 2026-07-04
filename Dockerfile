@@ -1,16 +1,20 @@
-FROM node:22-bookworm-slim AS frontend-builder
+# syntax=docker/dockerfile:1
+
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS frontend-builder
 WORKDIR /src/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM golang:1.22-bookworm AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.22-bookworm AS backend-builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/urestic ./cmd/urestic
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/urestic ./cmd/urestic
 
 FROM debian:bookworm-slim
 WORKDIR /app
