@@ -1,215 +1,156 @@
-# Urestic
+# Urestic 使用说明
 
-Urestic 是一个中文优先的 restic 易用化工具，不再定位为“GUI for restic”，而是定位为：
+Urestic 是一个 Docker 优先的 restic 辅助 Web 工具，用来管理仓库配置、生成备份脚本、配置通知并查询快照。
 
-```text
-easy use for restic
+## 准备
+
+需要先安装：
+
+- Docker
+- Docker Compose
+
+Urestic 容器内会安装 `restic` 和 `rclone`。
+
+## 启动
+
+复制环境变量示例：
+
+```bash
+cp .env.example .env
 ```
 
-备份动作由各服务器自行执行。Urestic 负责生成可部署脚本、保存仓库配置、查询仓库快照、分析备份健康情况，并生成恢复命令。
-
-## 新方向
-
-Urestic 的核心目标：
-
-- 让 restic + R2/B2/S3/rclone 更容易正确配置。
-- 生成各服务器本地执行的备份脚本，而不是由中央容器直接扫描远程服务器。
-- 一站式查看多个 restic 仓库的快照、主机、标签、路径和最近备份状态。
-- 分析哪些备份过期、哪些 tag/host 长时间没有更新、保留策略是否合理。
-- 生成恢复命令和初始化命令，降低误操作风险。
-- 提供多渠道结果通知配置，让脚本执行结果能发送到 Telegram、Email、Webhook 等渠道。
-
-## 不做什么
-
-第一阶段明确不做：
-
-- 不做中央服务器直接执行所有机器的备份。
-- 不做 Agent。
-- 不做多用户、多租户或复杂权限系统。
-- 不做传统 CRUD 风格的“restic GUI”。
-- 不默认读取或暴露 secret、仓库密码、rclone 配置内容。
-- rclone 运行配置默认保存在 `/app/data/rclone/rclone.conf`；Docker Compose 默认把宿主机 conf 只读挂载到 `/host-rclone/rclone.conf`，但必须在设置页手动复制才会导入。
-
-## 第一版范围
-
-### Web UI
-
-仍然保留 Web UI，但重做为现代企业工具风格，中文界面优先。
-
-建议主菜单：
+编辑 `.env`，至少修改管理员密码：
 
 ```text
-总览
-仓库
-脚本生成
-快照
-分析
-通知
-设置
+URESTIC_ADMIN_USERNAME=admin
+URESTIC_ADMIN_PASSWORD=change-this-password
 ```
 
-UI 原则：
+启动服务：
 
-- 中文优先，英文作为辅助语言。
-- 不做廉价后台 CRUD 风格。
-- 以任务流为中心：配置仓库 -> 生成脚本 -> 部署脚本 -> 查询结果 -> 分析健康状态。
-- 表单必须解释字段用途，尤其是 repository、tag、retention、prune；cron 字段只在 cron 类型下出现。
+```bash
+docker compose up -d --build
+```
 
-### 脚本生成
-
-脚本类型：
-
-- `python`，默认，优先支持完整能力。
-- `js`。
-- `sh`。
-- `ps1`。
-- `cron`，只生成一行 crontab 命令，不附带脚本或 JSON。
-
-Python 脚本优先支持：
-
-- `restic init`。
-- `restic unlock`。
-- `restic backup`。
-- `restic forget --prune`。
-- `restic check`。
-- `restic snapshots`。
-- 本地配置文件读取。
-- 执行结果通知。
-- 日志输出。
-
-生成内容：
-
-- 备份脚本。
-- 配置文件。
-- 初始化命令。
-- 快照查询命令。
-- 恢复命令模板。
-- cron 类型只输出一行 crontab 命令。
-
-### 后端支持
-
-第一版优先支持：
-
-- Cloudflare R2。
-- Backblaze B2。
-- S3 compatible。
-- rclone。
-
-其他 restic backend 后续再扩展。
-
-### 仓库观察台
-
-Urestic 查询仓库内容，不负责远程执行备份。
-
-查询能力：
-
-- `restic snapshots --json`。
-- 按 host 聚合。
-- 按 tag 聚合。
-- 按 path 聚合。
-- 显示最近备份时间。
-- 显示快照数量。
-- 判断备份是否过期。
-- 生成恢复命令。
-
-### 分析
-
-第一版分析能力：
-
-- 哪些 host 没有最近备份。
-- 哪些 tag 长时间未更新。
-- 某仓库最近一次快照时间。
-- 快照覆盖了哪些路径。
-- retention 策略解释和建议。
-- prune 是否开启的影响说明。
-
-### 多渠道结果通知
-
-Urestic 需要支持结果通知配置，并让生成脚本可以发送执行结果。
-
-第一版通知渠道：
-
-- Telegram Bot。
-- Email SMTP。
-- Webhook。
-
-后续可扩展：
-
-- Discord。
-- Slack。
-- Gotify。
-- Bark。
-- 企业微信。
-- 飞书。
-
-通知事件：
-
-- 备份成功。
-- 备份失败。
-- forget/prune 成功。
-- forget/prune 失败。
-- check 失败。
-- 仓库锁自动 unlock。
-- 仓库长时间无新快照。
-
-通知内容必须包含：
-
-- 仓库名。
-- 主机名。
-- 标签。
-- 备份路径。
-- 成功/失败状态。
-- 错误摘要。
-- 新增数据量。
-- 耗时。
-- 快照 ID。
-
-通知内容不得包含：
-
-- restic password。
-- R2/S3/B2 secret。
-- rclone token。
-- Authorization header。
-
-## 安全策略
-
-当前用户模型：唯一管理员。
-
-- Web API 必须要求管理员登录。
-- 不做多用户系统。
-- 仓库密码和云存储 secret 可以加密保存。
-- 查询仓库时不要求用户反复输入密码。
-- API 响应不返回明文 secret。
-- 日志和通知不输出 secret。
-- 前端不把 token 保存到 localStorage。
-
-## Cron 与保留策略
-
-Cron 和 retention 不冲突。
-
-- Cron 是运行时间，例如每天 02:00 执行脚本。
-- Retention 是保留规则，例如保留最近 10 个、每天 7 个、每月 12 个。
-- Prune 是空间回收，例如 forget 后删除不再引用的数据块。
-
-换句话说：
+打开 Web UI：
 
 ```text
-Cron = 什么时候跑
-Retention = 保留哪些快照
-Prune = 是否回收空间
+http://localhost:8080
 ```
 
-## 技术栈
+登录账号使用 `.env` 中的 `URESTIC_ADMIN_USERNAME` 和 `URESTIC_ADMIN_PASSWORD`。
 
-- 后端：Go + Gin。
-- 前端：Vue 3 + TypeScript + Vite。
-- 默认语言：`zh-CN`。
-- 第二语言：`en-US`。
-- 数据库：SQLite 优先。
-- 容器：Docker / Docker Compose。
+## 数据目录
 
-## 当前状态
+默认持久化目录：
 
-项目方向已从旧的 “restic Web GUI” 调整为 “easy use for restic”。
+```text
+./data -> /app/data
+./backups -> /backups
+./sources -> /sources:ro
+./restore -> /restore
+```
 
-后续应先重做产品结构和 UI，再重建功能实现。旧的计划任务执行型设计不再作为主线。
+不要把 `.env`、`data/`、`backups/`、`sources/`、`restore/` 提交到公开仓库。
+
+## 基本使用流程
+
+1. 登录 Web UI。
+2. 进入“仓库管理”，新增 restic 仓库配置。
+3. 填写 repository URL、restic password 和云存储参数。
+4. 点击“检测”或“检测全部”确认仓库和凭据可用。
+5. 进入“通知插入”，按需添加 Telegram、Email 或 Webhook。
+6. 进入“脚本管理”，选择仓库、脚本类型、备份源、tag、保留策略和通知渠道。
+7. 生成脚本，下载脚本和配置文件。
+8. 把生成文件放到实际需要备份的服务器上运行。
+9. 回到“仓库管理”，打开仓库快照列表查看备份结果。
+
+## 生成脚本
+
+支持脚本类型：
+
+- `python`
+- `js`
+- `sh`
+- `ps1`
+- `cron`
+
+`python` 和 `js` 会生成备份脚本和 `repo-config.json`。
+
+`sh` 和 `ps1` 在勾选通知渠道时会额外生成 Python helper，并由 wrapper 调用。
+
+`cron` 只生成一行 crontab 命令，不生成脚本或配置文件。
+
+## 在目标服务器运行脚本
+
+Python 示例：
+
+```bash
+python3 repo-backup.py
+```
+
+Shell 示例：
+
+```bash
+chmod +x repo-backup.sh
+./repo-backup.sh
+```
+
+PowerShell 示例：
+
+```powershell
+pwsh ./repo-backup.ps1
+```
+
+运行脚本的服务器需要能访问对应的备份源目录和 restic 仓库。
+
+## rclone 配置
+
+Urestic 默认使用容器内隔离配置：
+
+```text
+/app/data/rclone/rclone.conf
+```
+
+Docker Compose 默认把宿主机 rclone 配置只读挂载到：
+
+```text
+/host-rclone/rclone.conf
+```
+
+需要导入时，进入“设置”页面点击“复制/新建 conf”。Urestic 只展示 remote 数量和名称，不在页面编辑 remote secret。
+
+## 配置导入导出
+
+进入“设置”页面可以导出或导入 Urestic 配置。
+
+导出的 JSON 包含仓库密码、云存储 key、通知 token，请按敏感文件保存。
+
+导入时遇到同名仓库或通知渠道会跳过，不覆盖已有配置。
+
+## 常用命令
+
+查看容器状态：
+
+```bash
+docker compose ps
+```
+
+查看日志：
+
+```bash
+docker compose logs -f urestic
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+更新并重建：
+
+```bash
+git pull
+docker compose up -d --build
+```
