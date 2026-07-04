@@ -566,7 +566,11 @@ func (s server) generateScript(c *gin.Context) {
 		request.Notify.Channels = channels
 	}
 	result := scriptgen.Generate(repository, request.Request)
-	applog.Operation("generate_script", "repository", repository.Name, "type", request.ScriptType, "secret_mode", request.SecretMode, "source_count", strconv.Itoa(len(request.SourceDirs)), "tag_count", strconv.Itoa(len(request.Tags)), "notify", strconv.FormatBool(request.Notify.Enabled))
+	mode := strings.TrimSpace(request.Mode)
+	if mode == "" {
+		mode = "backup"
+	}
+	applog.Operation("generate_script", "repository", repository.Name, "mode", mode, "type", request.ScriptType, "secret_mode", request.SecretMode, "source_count", strconv.Itoa(len(request.SourceDirs)), "tag_count", strconv.Itoa(len(request.Tags)), "notify", strconv.FormatBool(request.Notify.Enabled))
 	ok(c, result)
 }
 

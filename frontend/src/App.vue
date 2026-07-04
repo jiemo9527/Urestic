@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ApiRequestError,
@@ -51,8 +51,6 @@ type SettingSection = 'system' | 'rclone' | 'recovery' | 'password' | 'logs'
 type RepositoryCheck = { status: 'valid' | 'invalid' | 'checking'; message: string; count?: number; checkedAt?: string }
 type SavedGeneratedFile = GeneratedFile & { savedAt: string }
 
-const defaultSourceDirCandidates = ''
-
 const { t, locale } = useI18n()
 const authChecked = ref(false)
 const authenticated = ref(false)
@@ -101,8 +99,11 @@ const builderForm = reactive({
   repositoryId: '',
   scriptType: 'python',
   secretMode: 'inline',
+  restoreMode: false,
   sourceDirsText: '',
-  sourceDirCandidatesText: defaultSourceDirCandidates,
+  restoreSnapshotId: 'latest',
+  restoreTargetDir: '/restore',
+  restorePathsText: '',
   tagsText: '',
   excludeExtensionsText: '',
   excludePatternsText: '',
@@ -161,7 +162,7 @@ const activeNotificationTemplate = computed(() => notificationTemplates.value.fi
 const selectedGeneratedFile = computed(() => generatedFiles.value.find((file) => file.name === selectedGeneratedFileName.value) || generatedFiles.value[0] || null)
 const activeSnapshotRepository = computed(() => activeRepositoryModal.value || repositories.value.find((item) => item.id === snapshotForm.repositoryId) || null)
 const staleHosts = computed(() => (insights.value?.hosts || []).filter((item) => item.stale))
-const sourceDirCandidates = computed(() => parseList(builderForm.sourceDirCandidatesText))
+const scriptTypeOptions = computed(() => builderForm.restoreMode ? ['python', 'js', 'sh', 'ps1'] : ['python', 'js', 'sh', 'ps1', 'cron'])
 const languageToggleLabel = computed(() => locale.value === 'zh-CN' ? 'EN' : '中')
 const languageToggleTitle = computed(() => locale.value === 'zh-CN' ? t('app.switchToEnglish') : t('app.switchToChinese'))
 const themeToggleLabel = computed(() => theme.value === 'dark' ? t('app.lightTheme') : t('app.darkTheme'))
@@ -204,6 +205,13 @@ const displayedLogEntries = computed(() => {
   if (!query) return logEntries.value
   return logEntries.value.filter((item) => `${item.time} ${item.message}`.toLowerCase().includes(query))
 })
+
+watch(() => builderForm.restoreMode, (enabled) => {
+  if (enabled && builderForm.scriptType === 'cron') {
+    builderForm.scriptType = 'python'
+  }
+})
+
 function routeToView(path: string): View {
   switch (path.replace(/\/+$/, '') || '/') {
     case '/overview':
@@ -268,14 +276,6 @@ function toggleTheme() {
 
 function parseList(value: string): string[] {
   return Array.from(new Set(value.split(',').map((item) => item.trim()).filter(Boolean)))
-}
-
-function addSourceDirCandidate(value: string) {
-  const items = parseList(builderForm.sourceDirsText)
-  if (!items.includes(value)) {
-    items.push(value)
-  }
-  builderForm.sourceDirsText = items.join(',')
 }
 
 function backendClass(backend: string) {
@@ -680,14 +680,15 @@ async function submitGenerate() {
   errorMessage.value = ''
   feedback.value = ''
   try {
-    const includeNotify = builderForm.scriptType !== 'cron' && builderForm.notifyChannelIds.length > 0
+    const includeNotify = !builderForm.restoreMode && builderForm.scriptType !== 'cron' && builderForm.notifyChannelIds.length > 0
     const result = await generateScript({
       repositoryId: builderForm.repositoryId,
-      scriptType: builderForm.scriptType,
+      scriptType: builderForm.restoreMode && builderForm.scriptType === 'cron' ? 'python' : builderForm.scriptType,
       secretMode: builderForm.secretMode,
-      sourceDirs: parseList(builderForm.sourceDirsText),
+      mode: builderForm.restoreMode ? 'restore' : 'backup',
+      sourceDirs: builderForm.restoreMode ? [] : parseList(builderForm.sourceDirsText),
       tags: parseList(builderForm.tagsText),
-      cron: builderForm.scriptType === 'cron' ? builderForm.cron : '',
+      cron: !builderForm.restoreMode && builderForm.scriptType === 'cron' ? builderForm.cron : '',
       options: {
         initIfMissing: builderForm.initIfMissing,
         excludePatterns: parseList(builderForm.excludePatternsText),
@@ -713,6 +714,11 @@ async function submitGenerate() {
         keepYearly: Number(builderForm.keepYearly) || 0,
         keepWithin: builderForm.keepWithin,
         prune: builderForm.prune
+      },
+      restore: {
+        snapshotId: builderForm.restoreSnapshotId,
+        targetDir: builderForm.restoreTargetDir,
+        includePaths: parseList(builderForm.restorePathsText)
       },
       notify: {
         enabled: includeNotify,
@@ -855,8 +861,7 @@ async function exportSettings() {
       generatedFiles: generatedFiles.value,
       selectedGeneratedFileName: selectedGeneratedFileName.value,
       theme: theme.value,
-      locale: locale.value,
-      sourceDirCandidatesText: builderForm.sourceDirCandidatesText
+      locale: locale.value
     }
     downloadTextFile(`urestic-config-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(config, null, 2) + '\n', 'application/json;charset=utf-8')
     feedback.value = t('app.configExported')
@@ -922,9 +927,6 @@ function applyClientConfig(config: ConfigExport) {
   }
   if (client.locale === 'zh-CN' || client.locale === 'en-US') {
     switchLanguage(client.locale)
-  }
-  if (typeof client.sourceDirCandidatesText === 'string') {
-    builderForm.sourceDirCandidatesText = client.sourceDirCandidatesText
   }
 }
 
@@ -1102,27 +1104,32 @@ onUnmounted(() => {
 
       <section v-if="activeView === 'builder'" class="script-generator">
         <form class="config-panel" @submit.prevent="submitGenerate">
-          <div class="section-title"><p class="eyebrow">script</p><h2>{{ t('app.generateBackupScript') }}</h2><p>{{ t('app.generateScriptHint') }}</p></div>
+          <div class="section-title"><p class="eyebrow">script</p><h2>{{ builderForm.restoreMode ? t('app.generateRestoreScript') : t('app.generateBackupScript') }}</h2><p>{{ builderForm.restoreMode ? t('app.generateRestoreScriptHint') : t('app.generateScriptHint') }}</p></div>
           <label>{{ t('app.targetRepository') }}<select v-model="builderForm.repositoryId" required><option value="" disabled>{{ t('app.selectRepository') }}</option><option v-for="repository in repositories" :key="repository.id" :value="repository.id">{{ repository.name }} ({{ repository.backend }})</option></select></label>
           <div class="field-grid compact">
-            <label>{{ t('app.scriptType') }}<select v-model="builderForm.scriptType"><option>python</option><option>js</option><option>sh</option><option>ps1</option><option>cron</option></select></label>
+            <label>{{ t('app.scriptType') }}<select v-model="builderForm.scriptType"><option v-for="type in scriptTypeOptions" :key="type" :value="type">{{ type }}</option></select></label>
             <label>{{ t('app.secretMode') }}<select v-model="builderForm.secretMode"><option value="inline">{{ t('app.inlineReady') }}</option><option value="placeholder">{{ t('app.placeholder') }}</option></select></label>
           </div>
+          <label class="checkbox mode-switch"><input v-model="builderForm.restoreMode" type="checkbox" /> {{ t('app.restoreMode') }}</label>
+          <p class="hint">{{ builderForm.restoreMode ? t('app.restoreModeHint') : t('app.backupModeHint') }}</p>
           <p v-if="builderForm.secretMode === 'inline'" class="warning">{{ t('app.inlineSecretWarning') }}</p>
-          <label>{{ t('app.sourceDirs') }}<textarea v-model="builderForm.sourceDirsText" rows="3" :placeholder="t('app.sourceDirsPlaceholder')"></textarea></label>
-          <div class="source-candidate-box">
-            <label>{{ t('app.sourceDirCandidates') }}<input v-model="builderForm.sourceDirCandidatesText" /></label>
-            <div class="source-candidates">
-              <button v-for="candidate in sourceDirCandidates" :key="candidate" class="ghost" type="button" @click="addSourceDirCandidate(candidate)">{{ candidate }}</button>
+          <label v-if="!builderForm.restoreMode">{{ t('app.sourceDirs') }}<textarea v-model="builderForm.sourceDirsText" rows="3" :placeholder="t('app.sourceDirsPlaceholder')"></textarea></label>
+          <div v-if="builderForm.restoreMode" class="restore-config-box">
+            <div class="field-grid compact">
+              <label>{{ t('app.restoreSnapshotId') }}<input v-model="builderForm.restoreSnapshotId" placeholder="latest" /></label>
+              <label>{{ t('app.restoreTargetDir') }}<input v-model="builderForm.restoreTargetDir" placeholder="/restore" /></label>
             </div>
+            <label>{{ t('app.restoreIncludePaths') }}<textarea v-model="builderForm.restorePathsText" rows="3" :placeholder="t('app.restoreIncludePathsPlaceholder')"></textarea></label>
+            <label>{{ t('app.hostName') }}<input v-model="builderForm.host" :placeholder="t('app.restoreHostPlaceholder')" /></label>
+            <p class="hint">{{ t('app.restoreLatestFilterHint') }}</p>
           </div>
           <div class="field-grid compact">
             <label>{{ t('app.tags') }}<input v-model="builderForm.tagsText" placeholder="daily,server-a" /></label>
-            <label v-if="builderForm.scriptType === 'cron'">{{ t('app.cron') }}<input v-model="builderForm.cron" /></label>
-            <p v-if="builderForm.scriptType === 'cron'" class="hint">{{ t('app.cronOnlyHint') }}</p>
+            <label v-if="!builderForm.restoreMode && builderForm.scriptType === 'cron'">{{ t('app.cron') }}<input v-model="builderForm.cron" /></label>
+            <p v-if="!builderForm.restoreMode && builderForm.scriptType === 'cron'" class="hint">{{ t('app.cronOnlyHint') }}</p>
           </div>
 
-          <details class="option-panel">
+          <details v-if="!builderForm.restoreMode" class="option-panel">
             <summary>{{ t('app.backupOptions') }}</summary>
             <div class="option-grid">
               <label>{{ t('app.excludeExtensions') }}<input v-model="builderForm.excludeExtensionsText" placeholder="tmp,log,cache" /></label>
@@ -1145,7 +1152,7 @@ onUnmounted(() => {
             </div>
           </details>
 
-          <details class="option-panel" open>
+          <details v-if="!builderForm.restoreMode" class="option-panel" open>
             <summary>{{ t('app.retentionAndNotifications') }}</summary>
             <div class="retention-grid">
               <label>keepLast<input v-model.number="builderForm.keepLast" type="number" min="0" /></label>

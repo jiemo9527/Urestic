@@ -89,7 +89,7 @@ printf '%s' 'new-strong-password' | docker compose exec -T urestic urestic reset
 4. 点击“检测”或“检测全部”确认仓库和凭据可用。
 5. 进入“通知插入”，按需添加 Telegram、Email 或 Webhook。
 6. 进入“脚本管理”，选择仓库、脚本类型、备份源、tag、保留策略和通知渠道。
-7. 生成脚本，下载脚本和配置文件。
+7. 生成备份脚本，下载脚本和配置文件。
 8. 把生成文件放到实际需要备份的服务器上运行。
 9. 回到“仓库管理”，打开仓库快照列表查看备份结果。
 
@@ -103,11 +103,20 @@ printf '%s' 'new-strong-password' | docker compose exec -T urestic urestic reset
 - `ps1`
 - `cron`
 
-`python` 和 `js` 会生成备份脚本和 `repo-config.json`。
+默认是备份模式。`python` 和 `js` 会生成备份脚本和 `repo-config.json`。
 
 `sh` 和 `ps1` 在勾选通知渠道时会额外生成 Python helper，并由 wrapper 调用。
 
 `cron` 只生成一行 crontab 命令，不生成脚本或配置文件。
+
+开启“恢复模式”后会生成恢复脚本，文件名为 `repo-restore.*`，配置文件为 `repo-restore-config.json`。恢复脚本只执行 `restic restore`，不会执行 backup、forget/prune、cron 或通知。
+
+恢复模式字段：
+
+- Snapshot ID：默认 `latest`，也可以填写具体快照 ID。
+- 恢复目标目录：默认 `/restore`。
+- 只恢复这些路径：可选，逗号分隔，会生成 `--include` 参数。
+- Host 名称和标签：仅在 Snapshot ID 为 `latest` 时作为筛选条件写入恢复命令。
 
 ## 在目标服务器运行脚本
 
@@ -131,6 +140,14 @@ pwsh ./repo-backup.ps1
 ```
 
 运行脚本的服务器需要能访问对应的备份源目录和 restic 仓库。
+
+恢复脚本示例：
+
+```bash
+python3 repo-restore.py
+```
+
+恢复脚本会把数据恢复到配置里的目标目录，不会覆盖 Urestic Web 服务的数据目录，除非你手动把目标目录指向那里。
 
 ## rclone 配置
 
@@ -160,7 +177,7 @@ Docker Compose 默认把宿主机 rclone 配置只读挂载到：
 - 默认变量。
 - `/app/data/rclone/rclone.conf` 内容。
 - 浏览器本地已生成脚本列表。
-- 主题、语言、备份源候选等前端偏好。
+- 主题、语言等前端偏好。
 
 恢复包不包含 Web UI 管理员密码。需要恢复管理员密码时使用 `urestic reset-admin-password`。
 
@@ -188,9 +205,9 @@ docker compose logs -f urestic
 docker compose down
 ```
 
-更新并重建：
+更新 Docker Hub 镜像并重启：
 
 ```bash
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```

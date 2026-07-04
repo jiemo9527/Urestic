@@ -382,9 +382,8 @@ button.logo-mark { padding: 0; }
 .generated-file-card span { overflow-wrap: anywhere; word-break: break-word; white-space: normal; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.35; }
 .generated-file-card small { color: var(--text-faint); font-size: 0.62rem; line-height: 1.2; }
 .notify-options { display: grid; gap: 12px; padding-top: 10px; border-top: 1px dashed var(--border-dim); }
-.source-candidate-box { display: grid; gap: 10px; }
-.source-candidates { display: flex; flex-wrap: wrap; gap: 8px; }
-.source-candidates .ghost { font-family: var(--font-mono); font-size: 0.76rem; }
+.restore-config-box { display: grid; gap: 12px; }
+.mode-switch { align-self: start; }
 
 .field-grid, .variable-box, .retention-grid, .option-grid, .checkbox-grid {
   display: grid;

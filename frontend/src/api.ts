@@ -114,17 +114,25 @@ export interface ScriptGenerateInput {
   repositoryId: string
   scriptType: string
   secretMode: string
+  mode: string
   sourceDirs: string[]
   tags: string[]
   cron: string
   options: BackupOptions
   retention: Retention
+  restore: RestoreOptions
   notify: {
     enabled: boolean
     channel: string
     channelIds: string[]
     events: string[]
   }
+}
+
+export interface RestoreOptions {
+  snapshotId: string
+  targetDir: string
+  includePaths: string[]
 }
 
 export interface BackupOptions {
@@ -247,7 +255,6 @@ export interface ClientConfigExport {
   selectedGeneratedFileName?: string
   theme?: string
   locale?: string
-  sourceDirCandidatesText?: string
 }
 
 export interface ConfigImportResult {

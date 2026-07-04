@@ -11,15 +11,23 @@ import (
 type Request struct {
 	ScriptType string         `json:"scriptType"`
 	SecretMode string         `json:"secretMode"`
+	Mode       string         `json:"mode"`
 	SourceDirs []string       `json:"sourceDirs"`
 	Tags       []string       `json:"tags"`
 	Cron       string         `json:"cron"`
 	Options    BackupOptions  `json:"options"`
 	Retention  Retention      `json:"retention"`
+	Restore    RestoreOptions `json:"restore"`
 	Notify     NotifySettings `json:"notify"`
 	// ResticPassword is filled server-side only when the caller explicitly
 	// requests an inline, ready-to-run script package.
 	ResticPassword string `json:"-"`
+}
+
+type RestoreOptions struct {
+	SnapshotID   string   `json:"snapshotId"`
+	TargetDir    string   `json:"targetDir"`
+	IncludePaths []string `json:"includePaths"`
 }
 
 type BackupOptions struct {
@@ -79,18 +87,26 @@ func Generate(repository repositories.Repository, request Request) Result {
 	if scriptType == "" {
 		scriptType = "python"
 	}
+	if restoreMode(request) && scriptType == "cron" {
+		scriptType = "python"
+	}
 	nameBase := generatedFileBase(repository)
 	configName := nameBase + "-config.json"
+	scriptSuffix := "backup"
+	if restoreMode(request) {
+		configName = nameBase + "-restore-config.json"
+		scriptSuffix = "restore"
+	}
 
 	switch scriptType {
 	case "js":
 		return Result{Files: []File{
-			{Name: nameBase + "-backup.js", Language: "javascript", Content: javaScript(configName)},
+			{Name: nameBase + "-" + scriptSuffix + ".js", Language: "javascript", Content: javaScript(configName)},
 			{Name: configName, Language: "json", Content: pythonConfig(repository, request)},
 		}}
 	case "sh":
-		files := []File{{Name: nameBase + "-backup.sh", Language: "bash", Content: shellScript(repository, request)}}
-		if request.Notify.Enabled {
+		files := []File{{Name: nameBase + "-" + scriptSuffix + ".sh", Language: "bash", Content: shellScript(repository, request)}}
+		if !restoreMode(request) && request.Notify.Enabled {
 			helperName := nameBase + "-backup.py"
 			files[0].Content = shellPythonWrapper(helperName)
 			files = append(files, File{Name: helperName, Language: "python", Content: pythonScript(configName)})
@@ -98,8 +114,8 @@ func Generate(repository repositories.Repository, request Request) Result {
 		files = append(files, File{Name: configName, Language: "json", Content: pythonConfig(repository, request)})
 		return Result{Files: files}
 	case "ps1":
-		files := []File{{Name: nameBase + "-backup.ps1", Language: "powershell", Content: powershellScript(repository, request)}}
-		if request.Notify.Enabled {
+		files := []File{{Name: nameBase + "-" + scriptSuffix + ".ps1", Language: "powershell", Content: powershellScript(repository, request)}}
+		if !restoreMode(request) && request.Notify.Enabled {
 			helperName := nameBase + "-backup.py"
 			files[0].Content = powershellPythonWrapper(helperName)
 			files = append(files, File{Name: helperName, Language: "python", Content: pythonScript(configName)})
@@ -112,10 +128,14 @@ func Generate(repository repositories.Repository, request Request) Result {
 		}}
 	default:
 		return Result{Files: []File{
-			{Name: nameBase + "-backup.py", Language: "python", Content: pythonScript(configName)},
+			{Name: nameBase + "-" + scriptSuffix + ".py", Language: "python", Content: pythonScript(configName)},
 			{Name: configName, Language: "json", Content: pythonConfig(repository, request)},
 		}}
 	}
+}
+
+func restoreMode(request Request) bool {
+	return strings.EqualFold(strings.TrimSpace(request.Mode), "restore")
 }
 
 func generatedFileBase(repository repositories.Repository) string {
@@ -154,11 +174,13 @@ func pythonConfig(repository repositories.Repository, request Request) string {
 		password = request.ResticPassword
 	}
 	config := map[string]any{
+		"mode":              scriptMode(request),
 		"restic_repository": repositoryURL(repository, request),
 		"source_dirs":       request.SourceDirs,
 		"tags":              request.Tags,
 		"options":           request.Options,
 		"retention":         request.Retention,
+		"restore":           normalizedRestore(request.Restore),
 		"notify":            request.Notify,
 		"restic_password":   password,
 	}
@@ -173,12 +195,36 @@ func pythonConfig(repository repositories.Repository, request Request) string {
 	return string(encoded) + "\n"
 }
 
+func scriptMode(request Request) string {
+	if restoreMode(request) {
+		return "restore"
+	}
+	return "backup"
+}
+
+func normalizedRestore(options RestoreOptions) RestoreOptions {
+	snapshotID := strings.TrimSpace(options.SnapshotID)
+	if snapshotID == "" {
+		snapshotID = "latest"
+	}
+	targetDir := strings.TrimSpace(options.TargetDir)
+	if targetDir == "" {
+		targetDir = "/restore"
+	}
+	return RestoreOptions{
+		SnapshotID:   snapshotID,
+		TargetDir:    targetDir,
+		IncludePaths: cleanList(options.IncludePaths),
+	}
+}
+
 func pythonScript(configName string) string {
 	script := `#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from email.message import EmailMessage
 import json
 import os
+import shutil
 import socket
 import smtplib
 import subprocess
@@ -292,6 +338,25 @@ def snapshot_selection_args(config):
         args.extend(['--host', str(options['host']).strip()])
     if options.get('dryRun'):
         args.append('--dry-run')
+    return args
+
+def restore_args(config, repo):
+    restore = config.get('restore') or {}
+    snapshot = str(restore.get('snapshotId') or 'latest').strip() or 'latest'
+    target = str(restore.get('targetDir') or '/restore').strip() or '/restore'
+    args = ['restic', '-r', repo, 'restore', snapshot, '--target', target]
+    for path in restore.get('includePaths') or []:
+        path = str(path).strip()
+        if path:
+            args.extend(['--include', path])
+    if snapshot == 'latest':
+        options = config.get('options') or {}
+        if str(options.get('host') or '').strip():
+            args.extend(['--host', str(options['host']).strip()])
+        for tag in config.get('tags') or []:
+            tag = str(tag).strip()
+            if tag:
+                args.extend(['--tag', tag])
     return args
 
 def repository_exists(repo, env):
@@ -420,6 +485,12 @@ def main():
         ensure_restic()
         repo = config['restic_repository']
         env = restic_env(config)
+        if config.get('mode') == 'restore':
+            if not repository_exists(repo, env):
+                raise CommandFailed('restic 仓库尚未初始化或无法访问。请先确认仓库配置和凭据。')
+            run(['restic', '-r', repo, 'unlock'], env)
+            run(restore_args(config, repo), env)
+            return
         ensure_repository(repo, env, config)
         tags = []
         for tag in config.get('tags', []):
@@ -427,7 +498,8 @@ def main():
         run(['restic', '-r', repo, 'unlock'], env)
         run(['restic', '-r', repo, 'backup'] + config['source_dirs'] + tags + backup_args(config) + ['--json'], env)
     except Exception as error:
-        send_notifications(config, 'backup_failed', '❌ Urestic 备份失败', notification_details(config, f"错误: {error}"))
+        if config.get('mode') != 'restore':
+            send_notifications(config, 'backup_failed', '❌ Urestic 备份失败', notification_details(config, f"错误: {error}"))
         raise
 
     try:
@@ -582,6 +654,24 @@ function snapshotSelectionArgs(config) {
   return args;
 }
 
+function restoreArgs(config, repo) {
+  const restore = config.restore || {};
+  const snapshot = String(restore.snapshotId || 'latest').trim() || 'latest';
+  const target = String(restore.targetDir || '/restore').trim() || '/restore';
+  const args = ['-r', repo, 'restore', snapshot, '--target', target];
+  for (const path of restore.includePaths || []) {
+    if (String(path).trim()) args.push('--include', String(path).trim());
+  }
+  if (snapshot === 'latest') {
+    const options = config.options || {};
+    if (String(options.host || '').trim()) args.push('--host', String(options.host).trim());
+    for (const tag of config.tags || []) {
+      if (String(tag).trim()) args.push('--tag', String(tag).trim());
+    }
+  }
+  return args;
+}
+
 function repositoryExists(repo, env) {
   return spawnSync('restic', ['-r', repo, 'cat', 'config'], { encoding: 'utf8', env }).status === 0;
 }
@@ -695,12 +785,20 @@ async function main() {
     ensureRestic();
     repo = config.restic_repository;
     env = resticEnv(config);
+    if (config.mode === 'restore') {
+      if (!repositoryExists(repo, env)) throw new Error('restic 仓库尚未初始化或无法访问。请先确认仓库配置和凭据。');
+      run('restic', ['-r', repo, 'unlock'], env);
+      run('restic', restoreArgs(config, repo), env);
+      return;
+    }
     ensureRepository(repo, env, config);
     tags = (config.tags || []).flatMap((tag) => ['--tag', String(tag)]);
     run('restic', ['-r', repo, 'unlock'], env);
     run('restic', ['-r', repo, 'backup', ...(config.source_dirs || []).map(String), ...tags, ...backupArgs(config), '--json'], env);
   } catch (error) {
-    await sendNotifications(config, 'backup_failed', '❌ Urestic 备份失败', notificationDetails(config, '错误: ' + error.message));
+    if (config.mode !== 'restore') {
+      await sendNotifications(config, 'backup_failed', '❌ Urestic 备份失败', notificationDetails(config, '错误: ' + error.message));
+    }
     throw error;
   }
 
@@ -730,6 +828,9 @@ main().catch((error) => {
 }
 
 func shellScript(repository repositories.Repository, request Request) string {
+	if restoreMode(request) {
+		return shellRestoreScript(repository, request)
+	}
 	tags := shellTags(request.Tags)
 	sources := shellQuoteAll(request.SourceDirs)
 	backupArgs := shellBackupArgs(request.Options)
@@ -762,7 +863,43 @@ restic forget %s %s %s
 `, shellQuote(repositoryURL(repository, request)), shellQuote(resticPassword(request)), shellEnvExports(repository, request), initBlock, sources, tags, backupArgs, tags, selectionArgs, retentionArgs(request.Retention))
 }
 
+func shellRestoreScript(repository repositories.Repository, request Request) string {
+	restore := normalizedRestore(request.Restore)
+	includeArgs := restoreIncludeArgs(restore.IncludePaths, shellQuote)
+	filterArgs := restoreFilterArgs(request, shellQuote)
+	return fmt.Sprintf(`#!/usr/bin/env bash
+set -euo pipefail
+
+ensure_restic() {
+  if command -v restic >/dev/null 2>&1; then return 0; fi
+  echo "未检测到 restic，尝试自动安装..."
+  if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y restic; return; fi
+  if command -v dnf >/dev/null 2>&1; then dnf install -y restic; return; fi
+  if command -v yum >/dev/null 2>&1; then yum install -y restic; return; fi
+  if command -v apk >/dev/null 2>&1; then apk add restic; return; fi
+  if command -v brew >/dev/null 2>&1; then brew install restic; return; fi
+  echo "无法自动安装 restic，请手动安装后重试。" >&2
+  exit 1
+}
+
+export RESTIC_REPOSITORY=%s
+export RESTIC_PASSWORD=%s
+%s
+
+ensure_restic
+if ! restic cat config >/dev/null 2>&1; then
+  echo "restic 仓库尚未初始化或无法访问。请先确认仓库配置和凭据。" >&2
+  exit 1
+fi
+restic unlock
+restic restore %s --target %s %s %s
+`, shellQuote(repositoryURL(repository, request)), shellQuote(resticPassword(request)), shellEnvExports(repository, request), shellQuote(restore.SnapshotID), shellQuote(restore.TargetDir), includeArgs, filterArgs)
+}
+
 func powershellScript(repository repositories.Repository, request Request) string {
+	if restoreMode(request) {
+		return powershellRestoreScript(repository, request)
+	}
 	sources := psQuoteAll(request.SourceDirs)
 	tags := strings.Join(psTags(request.Tags), " ")
 	backupArgs := powershellBackupArgs(request.Options)
@@ -785,6 +922,31 @@ restic unlock
 restic backup %s %s %s
 restic forget %s %s %s
 `, psQuote(repositoryURL(repository, request)), psQuote(resticPassword(request)), powershellEnvExports(repository, request), initBlock, sources, tags, backupArgs, tags, selectionArgs, retentionArgs(request.Retention))
+}
+
+func powershellRestoreScript(repository repositories.Repository, request Request) string {
+	restore := normalizedRestore(request.Restore)
+	includeArgs := restoreIncludeArgs(restore.IncludePaths, psQuote)
+	filterArgs := restoreFilterArgs(request, psQuote)
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$env:RESTIC_REPOSITORY = %s
+$env:RESTIC_PASSWORD = %s
+%s
+
+if (-not (Get-Command restic -ErrorAction SilentlyContinue)) {
+  Write-Host '未检测到 restic，尝试自动安装...'
+  if (Get-Command winget -ErrorAction SilentlyContinue) { winget install restic.restic --silent }
+  elseif (Get-Command choco -ErrorAction SilentlyContinue) { choco install restic -y }
+  else { throw '无法自动安装 restic，请手动安装后重试。' }
+}
+
+restic cat config *> $null
+if ($LASTEXITCODE -ne 0) {
+  throw 'restic 仓库尚未初始化或无法访问。请先确认仓库配置和凭据。'
+}
+restic unlock
+restic restore %s --target %s %s %s
+`, psQuote(repositoryURL(repository, request)), psQuote(resticPassword(request)), powershellEnvExports(repository, request), psQuote(restore.SnapshotID), psQuote(restore.TargetDir), includeArgs, filterArgs)
 }
 
 func cronLine(repository repositories.Repository, request Request) string {
@@ -1071,6 +1233,29 @@ func shellSelectionArgs(options BackupOptions) string {
 
 func powershellSelectionArgs(options BackupOptions) string {
 	return selectionArgs(options, psQuote)
+}
+
+func restoreIncludeArgs(values []string, quote func(string) string) string {
+	parts := []string{}
+	for _, value := range cleanList(values) {
+		parts = append(parts, "--include", quote(value))
+	}
+	return strings.Join(parts, " ")
+}
+
+func restoreFilterArgs(request Request, quote func(string) string) string {
+	restore := normalizedRestore(request.Restore)
+	if restore.SnapshotID != "latest" {
+		return ""
+	}
+	parts := []string{}
+	if host := strings.TrimSpace(request.Options.Host); host != "" {
+		parts = append(parts, "--host", quote(host))
+	}
+	for _, tag := range cleanList(request.Tags) {
+		parts = append(parts, "--tag", quote(tag))
+	}
+	return strings.Join(parts, " ")
 }
 
 func backupArgs(options BackupOptions, quote func(string) string) string {
