@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/urestic/urestic/backend/internal/applog"
 	"github.com/urestic/urestic/backend/internal/auth"
 	"github.com/urestic/urestic/backend/internal/config"
 	"github.com/urestic/urestic/backend/internal/db"
@@ -19,6 +20,7 @@ import (
 )
 
 func main() {
+	applog.Install(1000)
 	cfg := config.Load()
 	if handleCommand(cfg) {
 		return

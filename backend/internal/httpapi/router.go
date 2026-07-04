@@ -20,6 +20,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/urestic/urestic/backend/internal/applog"
 	"github.com/urestic/urestic/backend/internal/auth"
 	"github.com/urestic/urestic/backend/internal/config"
 	"github.com/urestic/urestic/backend/internal/notifications"
@@ -143,7 +144,8 @@ type resticSnapshot struct {
 
 func NewRouter(cfg config.Config, repoStore *repositories.Store, notificationStore *notifications.Store, settingsStore *settings.Store, secretManager *secrets.Manager, authManager *auth.Manager) *gin.Engine {
 	s := server{cfg: cfg, repos: repoStore, notify: notificationStore, settings: settingsStore, secrets: secretManager, auth: authManager}
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/api/v1/settings/logs"}}), gin.Recovery())
 	if err := r.SetTrustedProxies(nil); err != nil {
 		panic(err)
 	}
@@ -188,6 +190,8 @@ func NewRouter(cfg config.Config, repoStore *repositories.Store, notificationSto
 		protected.GET("/settings/export", s.exportConfig)
 		protected.POST("/settings/import", s.importConfig)
 		protected.POST("/settings/password", s.changePassword)
+		protected.GET("/settings/logs", s.listLogs)
+		protected.DELETE("/settings/logs", s.clearLogs)
 		protected.GET("/settings/rclone", s.rcloneStatus)
 		protected.POST("/settings/rclone/update", s.updateRclone)
 		protected.POST("/settings/rclone/import-config", s.importRcloneConfig)
@@ -223,14 +227,17 @@ func (s server) login(c *gin.Context) {
 	}
 	result, authenticated := s.auth.Login(c.Request.Context(), strings.TrimSpace(request.Username), request.Password)
 	if !authenticated {
+		applog.Operation("login_failed", "username", strings.TrimSpace(request.Username), "remote", c.ClientIP())
 		fail(c, http.StatusUnauthorized, "INVALID_CREDENTIALS", "管理员账号或密码错误。")
 		return
 	}
+	applog.Operation("login_success", "username", result.User.Username, "remote", c.ClientIP())
 	setSessionCookie(c, result.Token, int(s.auth.TTL().Seconds()))
 	ok(c, result)
 }
 
 func (s server) logout(c *gin.Context) {
+	applog.Operation("logout", "remote", c.ClientIP())
 	setSessionCookie(c, "", -1)
 	ok(c, gin.H{"loggedOut": true})
 }
@@ -246,7 +253,7 @@ func (s server) currentUser(c *gin.Context) {
 func (s server) systemInfo(c *gin.Context) {
 	ok(c, gin.H{
 		"name":          "Urestic",
-		"version":       "0.2.0-dev",
+		"version":       "260705",
 		"mode":          "easy-use-for-restic",
 		"language":      s.cfg.DefaultLang,
 		"dataDir":       s.cfg.DataDir,
@@ -279,6 +286,7 @@ func (s server) updateRclone(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "RCLONE_UPDATE_FAILED", limitText(message, 2000))
 		return
 	}
+	applog.Operation("rclone_update", "status", "success")
 	ok(c, gin.H{"updated": true, "output": limitText(strings.TrimSpace(stdout.String()+"\n"+stderr.String()), 4000), "status": s.rcloneStatusData(c.Request.Context())})
 }
 
@@ -309,6 +317,7 @@ func (s server) importRcloneConfig(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "RCLONE_IMPORT_WRITE_FAILED", "rclone.conf 写入失败。")
 		return
 	}
+	applog.Operation("rclone_import_config", "created_empty", strconv.FormatBool(len(content) == 0))
 	ok(c, gin.H{"imported": true, "createdEmpty": len(content) == 0, "status": s.rcloneStatusData(c.Request.Context())})
 }
 
@@ -483,6 +492,7 @@ func (s server) createRepository(c *gin.Context) {
 		s.handleRepositoryError(c, err)
 		return
 	}
+	applog.Operation("create_repository", "id", item.ID, "name", item.Name, "backend", item.Backend)
 	okStatus(c, http.StatusCreated, item)
 }
 
@@ -502,14 +512,17 @@ func (s server) updateRepository(c *gin.Context) {
 		s.handleRepositoryError(c, err)
 		return
 	}
+	applog.Operation("update_repository", "id", item.ID, "name", item.Name, "backend", item.Backend)
 	ok(c, item)
 }
 
 func (s server) deleteRepository(c *gin.Context) {
-	if err := s.repos.Delete(c.Request.Context(), c.Param("id")); err != nil {
+	id := c.Param("id")
+	if err := s.repos.Delete(c.Request.Context(), id); err != nil {
 		s.handleRepositoryError(c, err)
 		return
 	}
+	applog.Operation("delete_repository", "id", id)
 	ok(c, gin.H{"deleted": true})
 }
 
@@ -553,6 +566,7 @@ func (s server) generateScript(c *gin.Context) {
 		request.Notify.Channels = channels
 	}
 	result := scriptgen.Generate(repository, request.Request)
+	applog.Operation("generate_script", "repository", repository.Name, "type", request.ScriptType, "secret_mode", request.SecretMode, "source_count", strconv.Itoa(len(request.SourceDirs)), "tag_count", strconv.Itoa(len(request.Tags)), "notify", strconv.FormatBool(request.Notify.Enabled))
 	ok(c, result)
 }
 
@@ -572,6 +586,7 @@ func (s server) listSnapshots(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "SNAPSHOT_QUERY_FAILED", err.Error())
 		return
 	}
+	applog.Operation("query_snapshots", "repository", repository.Name, "count", strconv.Itoa(len(items)))
 	ok(c, gin.H{"items": items})
 }
 
@@ -615,6 +630,7 @@ func (s server) deleteSnapshot(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "SNAPSHOT_DELETE_FAILED", message)
 		return
 	}
+	applog.Operation("delete_snapshot", "repository", repository.Name, "snapshot", snapshotID)
 	ok(c, gin.H{"deleted": true})
 }
 
@@ -704,6 +720,7 @@ func (s server) createNotification(c *gin.Context) {
 		s.handleNotificationError(c, err)
 		return
 	}
+	applog.Operation("create_notification", "id", item.ID, "name", item.Name, "type", item.Type)
 	okStatus(c, http.StatusCreated, item)
 }
 
@@ -733,6 +750,7 @@ func (s server) updateNotification(c *gin.Context) {
 		s.handleNotificationError(c, err)
 		return
 	}
+	applog.Operation("update_notification", "id", item.ID, "name", item.Name, "type", item.Type)
 	ok(c, item)
 }
 
@@ -751,14 +769,17 @@ func (s server) testNotification(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "NOTIFICATION_TEST_FAILED", err.Error())
 		return
 	}
+	applog.Operation("test_notification", "id", item.ID, "name", item.Name, "type", item.Type)
 	ok(c, gin.H{"tested": true})
 }
 
 func (s server) deleteNotification(c *gin.Context) {
-	if err := s.notify.Delete(c.Request.Context(), c.Param("id")); err != nil {
+	id := c.Param("id")
+	if err := s.notify.Delete(c.Request.Context(), id); err != nil {
 		s.handleNotificationError(c, err)
 		return
 	}
+	applog.Operation("delete_notification", "id", id)
 	ok(c, gin.H{"deleted": true})
 }
 
@@ -801,6 +822,7 @@ func (s server) setDefaultVariables(c *gin.Context) {
 			return
 		}
 	}
+	applog.Operation("update_default_variables", "count", strconv.Itoa(len(values)))
 	s.getDefaultVariables(c)
 }
 
@@ -865,6 +887,7 @@ func (s server) exportConfig(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "CONFIG_EXPORT_FAILED", "rclone.conf 读取失败。")
 		return
 	}
+	applog.Operation("export_config", "repositories", strconv.Itoa(len(repositoriesExport)), "notifications", strconv.Itoa(len(notificationsExport)), "rclone_included", strconv.FormatBool(rcloneConfig.Included))
 
 	ok(c, configExport{
 		FormatVersion:    2,
@@ -1028,6 +1051,18 @@ func (s server) importConfig(c *gin.Context) {
 			return
 		}
 	}
+	applog.Operation(
+		"import_config",
+		"format_version", strconv.Itoa(request.FormatVersion),
+		"repositories_created", strconv.Itoa(repositoriesCreated),
+		"repositories_updated", strconv.Itoa(repositoriesUpdated),
+		"repositories_deleted", strconv.Itoa(repositoriesDeleted),
+		"notifications_created", strconv.Itoa(notificationsCreated),
+		"notifications_updated", strconv.Itoa(notificationsUpdated),
+		"notifications_deleted", strconv.Itoa(notificationsDeleted),
+		"rclone_restored", strconv.FormatBool(rcloneConfigRestored),
+		"rclone_removed", strconv.FormatBool(rcloneConfigRemoved),
+	)
 
 	ok(c, gin.H{
 		"repositoriesCreated":      repositoriesCreated,
@@ -1102,7 +1137,19 @@ func (s server) changePassword(c *gin.Context) {
 		return
 	}
 	setSessionCookie(c, "", -1)
+	applog.Operation("change_password", "username", s.auth.Username())
 	ok(c, gin.H{"changed": true})
+}
+
+func (s server) listLogs(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
+	ok(c, gin.H{"items": applog.Default.Entries(c.Query("query"), limit)})
+}
+
+func (s server) clearLogs(c *gin.Context) {
+	applog.Operation("clear_logs")
+	applog.Default.Clear()
+	ok(c, gin.H{"cleared": true})
 }
 
 func (s server) repositoryParams(request repositoryRequest) (repositories.Params, string, string) {

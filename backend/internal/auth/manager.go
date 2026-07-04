@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,7 +52,13 @@ func Open(cfg config.Config) (*Manager, error) {
 	overrideHash := loadPasswordHash(cfg.DataDir)
 	manager.passwordHash = overrideHash
 	if strings.TrimSpace(cfg.AdminPassword) == "" && strings.TrimSpace(cfg.AdminPasswordHash) == "" && overrideHash == "" {
-		return nil, ErrAuthPasswordMissing
+		password, encoded, err := generateInitialPassword(cfg.DataDir)
+		if err != nil {
+			return nil, err
+		}
+		manager.passwordHash = encoded
+		log.Printf("initial admin password generated; username=%s password=%s", cfg.AdminUsername, password)
+		log.Printf("change the initial admin password after login; it will not be printed again unless /app/data/admin_password.sha256 is removed")
 	}
 
 	key, err := openKey(cfg.DataDir)
@@ -119,6 +126,19 @@ func ResetPassword(dataDir string, newPassword string) (string, error) {
 		return "", err
 	}
 	return encoded, nil
+}
+
+func generateInitialPassword(dataDir string) (string, string, error) {
+	bytes := make([]byte, 24)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", err
+	}
+	password := base64.RawURLEncoding.EncodeToString(bytes)
+	encoded, err := ResetPassword(dataDir, password)
+	if err != nil {
+		return "", "", err
+	}
+	return password, encoded, nil
 }
 
 func (m *Manager) VerifyToken(token string) (User, bool) {

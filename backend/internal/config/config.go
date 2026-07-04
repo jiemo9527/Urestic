@@ -25,7 +25,7 @@ func Load() Config {
 	dataDir := env("URESTIC_DATA_DIR", "/app/data")
 
 	return Config{
-		Addr:              env("URESTIC_ADDR", ":8080"),
+		Addr:              env("URESTIC_ADDR", ":8085"),
 		DataDir:           dataDir,
 		DatabasePath:      env("URESTIC_DATABASE_PATH", dataDir+"/urestic.db"),
 		WebDir:            env("URESTIC_WEB_DIR", ""),

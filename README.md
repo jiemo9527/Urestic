@@ -13,26 +13,13 @@ Urestic 容器内会安装 `restic` 和 `rclone`。
 
 ## 启动
 
-复制环境变量示例：
+直接使用 Docker Hub 镜像启动：
 
 ```bash
-cp .env.example .env
+docker compose up -d
 ```
 
-编辑 `.env`，至少修改管理员密码：
-
-```text
-URESTIC_ADMIN_USERNAME=admin
-URESTIC_ADMIN_PASSWORD=change-this-password
-```
-
-使用源码构建并启动：
-
-```bash
-docker compose up -d --build
-```
-
-也可以直接使用 Docker Hub 镜像：
+也可以手动创建 `docker-compose.yml`：
 
 ```yaml
 services:
@@ -40,11 +27,9 @@ services:
     image: wanxve0000/urestic:latest
     container_name: urestic
     ports:
-      - "8080:8080"
+      - "8085:8085"
     environment:
-      - URESTIC_AUTH_ENABLED=true
-      - URESTIC_ADMIN_USERNAME=admin
-      - URESTIC_ADMIN_PASSWORD=change-this-password
+      - TZ=Asia/Shanghai
     volumes:
       - ./data:/app/data
       - ./backups:/backups
@@ -56,10 +41,16 @@ services:
 打开 Web UI：
 
 ```text
-http://localhost:8080
+http://localhost:8085
 ```
 
-登录账号使用 `.env` 中的 `URESTIC_ADMIN_USERNAME` 和 `URESTIC_ADMIN_PASSWORD`。
+默认管理员账号是 `admin`。首次启动如果没有设置管理员密码，Urestic 会自动生成初始密码并写入 `/app/data/admin_password.sha256`，明文初始密码只会打印到容器日志：
+
+```bash
+docker logs urestic
+```
+
+如果要预先指定密码，可以通过环境变量设置 `URESTIC_ADMIN_PASSWORD`，否则不需要 `.env`。
 
 ## 重置管理员密码
 

@@ -24,7 +24,7 @@ RUN apt-get update \
     && mkdir -p /app/data /app/web /backups /restore
 COPY --from=backend-builder /out/urestic /usr/local/bin/urestic
 COPY --from=frontend-builder /src/frontend/dist /app/web
-ENV URESTIC_ADDR=:8080 \
+ENV URESTIC_ADDR=:8085 \
     URESTIC_LANG=zh-CN \
     URESTIC_DATA_DIR=/app/data \
     URESTIC_DATABASE_PATH=/app/data/urestic.db \
@@ -36,5 +36,5 @@ ENV URESTIC_ADDR=:8080 \
     URESTIC_RCLONE_IMPORT_PATH=/host-rclone/rclone.conf \
     URESTIC_RCLONE_CACHE_DIR=/app/data/rclone/cache \
     GIN_MODE=release
-EXPOSE 8080
+EXPOSE 8085
 CMD ["urestic"]

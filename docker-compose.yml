@@ -1,27 +1,11 @@
 services:
   urestic:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: wanxve0000/urestic:latest
     container_name: urestic
     ports:
-      - "${URESTIC_HTTP_PORT:-8080}:8080"
+      - "8085:8085"
     environment:
       - TZ=Asia/Shanghai
-      - URESTIC_ADDR=:8080
-      - URESTIC_LANG=zh-CN
-      - URESTIC_DATA_DIR=/app/data
-      - URESTIC_DATABASE_PATH=/app/data/urestic.db
-      - URESTIC_WEB_DIR=/app/web
-      - URESTIC_AUTH_ENABLED=${URESTIC_AUTH_ENABLED:-true}
-      - URESTIC_ADMIN_USERNAME=${URESTIC_ADMIN_USERNAME:-admin}
-      - URESTIC_ADMIN_PASSWORD=${URESTIC_ADMIN_PASSWORD:?set URESTIC_ADMIN_PASSWORD in .env}
-      - URESTIC_ADMIN_PASSWORD_HASH=${URESTIC_ADMIN_PASSWORD_HASH:-}
-      - URESTIC_SESSION_TTL_HOURS=${URESTIC_SESSION_TTL_HOURS:-12}
-      - URESTIC_RCLONE_CONFIG=/app/data/rclone/rclone.conf
-      - URESTIC_RCLONE_IMPORT_PATH=/host-rclone/rclone.conf
-      - URESTIC_RCLONE_CACHE_DIR=/app/data/rclone/cache
-      - GIN_MODE=release
     volumes:
       - ./data:/app/data
       - ./backups:/backups

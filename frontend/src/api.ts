@@ -66,6 +66,12 @@ export interface RcloneRemote {
   secretFields: string[]
 }
 
+export interface AppLogEntry {
+  id: number
+  time: string
+  message: string
+}
+
 export interface BackendTemplate {
   id: string
   name: string
@@ -365,6 +371,17 @@ export async function getDefaultVariables(): Promise<Record<string, string>> {
 export async function saveDefaultVariables(variables: Record<string, string>): Promise<Record<string, string>> {
   const response = await request<{ variables: Record<string, string> }>('/api/v1/settings/default-variables', jsonInit('PUT', { variables }))
   return response.variables
+}
+
+export async function listAppLogs(query = '', limit = 500): Promise<AppLogEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (query.trim()) params.set('query', query.trim())
+  const response = await request<{ items: AppLogEntry[] }>(`/api/v1/settings/logs?${params.toString()}`)
+  return response.items
+}
+
+export async function clearAppLogs(): Promise<void> {
+  await request<{ cleared: boolean }>('/api/v1/settings/logs', { method: 'DELETE' })
 }
 
 export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
