@@ -7,9 +7,23 @@ import (
 
 func TestEncryptDecryptRecoveryPack(t *testing.T) {
 	original := configExport{
-		FormatVersion:    2,
-		ExportedAt:       "2026-07-05T00:00:00Z",
+		FormatVersion: 2,
+		ExportedAt:    "2026-07-05T00:00:00Z",
+		Repositories: []repositoryExport{{
+			Name:        "main-r2",
+			Backend:     "r2",
+			RepoURL:     "s3:https://example.r2.cloudflarestorage.com/bucket/prefix",
+			Password:    "restic-secret",
+			Variables:   map[string]string{"r2_access_key_id": "key", "r2_secret_access_key": "secret"},
+			Description: "primary repo",
+		}},
+		Notifications: []notificationExport{{
+			Name:     "telegram",
+			Type:     "telegram",
+			Settings: map[string]string{"bot_token": "token", "chat_id": "1000"},
+		}},
 		DefaultVariables: map[string]string{"RESTIC_COMPRESSION": "auto"},
+		RcloneConfig:     rcloneConfigExport{Included: true, Path: "/app/data/rclone/rclone.conf", Content: "[remote]\ntype = s3\n"},
 		Client:           json.RawMessage(`{"locale":"zh-CN"}`),
 	}
 	pack, err := encryptRecoveryPack(original, "strong-password")
@@ -27,7 +41,7 @@ func TestEncryptDecryptRecoveryPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decryptRecoveryPack failed: %v", err)
 	}
-	if decrypted.FormatVersion != original.FormatVersion || decrypted.DefaultVariables["RESTIC_COMPRESSION"] != "auto" || string(decrypted.Client) != string(original.Client) {
+	if decrypted.FormatVersion != original.FormatVersion || decrypted.Repositories[0].Password != "restic-secret" || decrypted.Notifications[0].Settings["bot_token"] != "token" || decrypted.DefaultVariables["RESTIC_COMPRESSION"] != "auto" || decrypted.RcloneConfig.Content == "" || string(decrypted.Client) != string(original.Client) {
 		t.Fatalf("unexpected decrypted payload: %+v", decrypted)
 	}
 	if _, err := decryptRecoveryPack(raw, "wrong-password"); err == nil {

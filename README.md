@@ -9,7 +9,7 @@ Urestic 是一个 Docker 优先的 restic 辅助 Web 工具，用来管理仓库
 - Docker
 - Docker Compose
 
-Urestic 容器内会安装 `restic` 和 `rclone`。
+Urestic 容器内会安装 `restic` 和固定版本 `rclone v1.74.3`。
 
 ## 启动
 
@@ -150,6 +150,8 @@ python3 repo-restore.py
 恢复脚本会把数据恢复到配置里的目标目录，不会覆盖 Urestic Web 服务的数据目录，除非你手动把目标目录指向那里。
 
 ## rclone 配置
+
+容器默认包含 `rclone v1.74.3`。
 
 Urestic 默认使用容器内隔离配置：
 

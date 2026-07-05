@@ -272,7 +272,7 @@ Urestic 查询仓库内容，不负责远程执行备份。
 ## rclone 策略
 
 - rclone 是可选能力。
-- 容器可以包含 `rclone` 二进制。
+- 容器包含 `rclone v1.74.3` 二进制。
 - Urestic 默认 rclone 运行配置路径是 `/app/data/rclone/rclone.conf`。
 - Docker Compose 默认把宿主机 conf 只读挂载到 `/host-rclone/rclone.conf`。
 - 必须在设置页手动复制，宿主机 conf 才会导入运行配置。

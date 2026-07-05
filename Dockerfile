@@ -17,9 +17,22 @@ COPY backend/ ./
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/urestic ./cmd/urestic
 
 FROM debian:bookworm-slim
+ARG TARGETARCH
+ARG RCLONE_VERSION=1.74.3
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tzdata restic rclone \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata restic curl unzip \
+    && case "$TARGETARCH" in \
+        amd64) rclone_arch="amd64" ;; \
+        arm64) rclone_arch="arm64" ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/rclone.zip "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${rclone_arch}.zip" \
+    && unzip -q /tmp/rclone.zip -d /tmp \
+    && mv "/tmp/rclone-v${RCLONE_VERSION}-linux-${rclone_arch}/rclone" /usr/local/bin/rclone \
+    && chmod 0755 /usr/local/bin/rclone \
+    && rclone version \
+    && rm -rf /tmp/rclone* \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /app/data /app/web /backups /restore
 COPY --from=backend-builder /out/urestic /usr/local/bin/urestic
