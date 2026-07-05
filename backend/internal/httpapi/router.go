@@ -82,6 +82,7 @@ type configExport struct {
 	Notifications    []notificationExport `json:"notifications"`
 	DefaultVariables map[string]string    `json:"defaultVariables"`
 	RcloneConfig     rcloneConfigExport   `json:"rcloneConfig"`
+	Client           json.RawMessage      `json:"client,omitempty"`
 }
 
 type repositoryExport struct {
@@ -187,7 +188,7 @@ func NewRouter(cfg config.Config, repoStore *repositories.Store, notificationSto
 		protected.DELETE("/notifications/:id", s.deleteNotification)
 		protected.GET("/settings/default-variables", s.getDefaultVariables)
 		protected.PUT("/settings/default-variables", s.setDefaultVariables)
-		protected.GET("/settings/export", s.exportConfig)
+		protected.POST("/settings/export", s.exportConfig)
 		protected.POST("/settings/import", s.importConfig)
 		protected.POST("/settings/password", s.changePassword)
 		protected.GET("/settings/logs", s.listLogs)
@@ -831,6 +832,15 @@ func (s server) setDefaultVariables(c *gin.Context) {
 }
 
 func (s server) exportConfig(c *gin.Context) {
+	var request recoveryPackExportRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		fail(c, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body.")
+		return
+	}
+	if err := validateRecoveryPackPassword(request.Password); err != nil {
+		fail(c, http.StatusBadRequest, "RECOVERY_PASSWORD_REQUIRED", err.Error())
+		return
+	}
 	items, err := s.repos.List(c.Request.Context())
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "CONFIG_EXPORT_FAILED", "仓库配置读取失败。")
@@ -891,22 +901,34 @@ func (s server) exportConfig(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "CONFIG_EXPORT_FAILED", "rclone.conf 读取失败。")
 		return
 	}
-	applog.Operation("export_config", "repositories", strconv.Itoa(len(repositoriesExport)), "notifications", strconv.Itoa(len(notificationsExport)), "rclone_included", strconv.FormatBool(rcloneConfig.Included))
-
-	ok(c, configExport{
+	payload := configExport{
 		FormatVersion:    2,
 		ExportedAt:       time.Now().UTC().Format(time.RFC3339Nano),
 		Repositories:     repositoriesExport,
 		Notifications:    notificationsExport,
 		DefaultVariables: defaultVariables,
 		RcloneConfig:     rcloneConfig,
-	})
+		Client:           request.Client,
+	}
+	pack, err := encryptRecoveryPack(payload, request.Password)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "CONFIG_EXPORT_FAILED", "恢复包加密失败。")
+		return
+	}
+	applog.Operation("export_config", "repositories", strconv.Itoa(len(repositoriesExport)), "notifications", strconv.Itoa(len(notificationsExport)), "rclone_included", strconv.FormatBool(rcloneConfig.Included), "encrypted", "true")
+
+	ok(c, pack)
 }
 
 func (s server) importConfig(c *gin.Context) {
-	var request configExport
-	if err := c.ShouldBindJSON(&request); err != nil {
+	var importRequest recoveryPackImportRequest
+	if err := c.ShouldBindJSON(&importRequest); err != nil {
 		fail(c, http.StatusBadRequest, "INVALID_JSON", "Invalid JSON request body.")
+		return
+	}
+	request, err := decryptRecoveryPack(importRequest.Pack, importRequest.Password)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "CONFIG_IMPORT_FAILED", err.Error())
 		return
 	}
 	if request.FormatVersion != 1 && request.FormatVersion != 2 {
@@ -1068,7 +1090,7 @@ func (s server) importConfig(c *gin.Context) {
 		"rclone_removed", strconv.FormatBool(rcloneConfigRemoved),
 	)
 
-	ok(c, gin.H{
+	response := gin.H{
 		"repositoriesCreated":      repositoriesCreated,
 		"repositoriesUpdated":      repositoriesUpdated,
 		"repositoriesDeleted":      repositoriesDeleted,
@@ -1081,7 +1103,11 @@ func (s server) importConfig(c *gin.Context) {
 		"defaultVariablesDeleted":  defaultVariablesDeleted,
 		"rcloneConfigRestored":     rcloneConfigRestored,
 		"rcloneConfigRemoved":      rcloneConfigRemoved,
-	})
+	}
+	if len(request.Client) > 0 {
+		response["client"] = request.Client
+	}
+	ok(c, response)
 }
 
 func exportRcloneConfig(path string) (rcloneConfigExport, error) {

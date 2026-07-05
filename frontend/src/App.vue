@@ -33,7 +33,7 @@ import {
   type AuthUser,
   type AppLogEntry,
   type BackendTemplate,
-  type ConfigExport,
+  type ClientConfigExport,
   type GeneratedFile,
   type InsightSummary,
   type NotificationChannel,
@@ -134,6 +134,7 @@ const builderForm = reactive({
   notifyOnPruneFailed: true
 })
 const snapshotForm = reactive({ repositoryId: '' })
+const recoveryPackForm = reactive({ exportPassword: '', exportPasswordConfirm: '', importPassword: '' })
 const notificationForm = reactive({
   name: '',
   type: 'telegram',
@@ -852,18 +853,28 @@ function downloadGeneratedFiles() {
 }
 
 async function exportSettings() {
-  pending.value = 'export-config'
   errorMessage.value = ''
   feedback.value = ''
+  if (!recoveryPackForm.exportPassword || recoveryPackForm.exportPassword.length < 8) {
+    errorMessage.value = t('app.recoveryPasswordRequired')
+    return
+  }
+  if (recoveryPackForm.exportPassword !== recoveryPackForm.exportPasswordConfirm) {
+    errorMessage.value = t('app.recoveryPasswordMismatch')
+    return
+  }
+  pending.value = 'export-config'
   try {
-    const config = await exportConfig()
-    config.client = {
+    const client: ClientConfigExport = {
       generatedFiles: generatedFiles.value,
       selectedGeneratedFileName: selectedGeneratedFileName.value,
       theme: theme.value,
       locale: locale.value
     }
-    downloadTextFile(`urestic-config-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(config, null, 2) + '\n', 'application/json;charset=utf-8')
+    const pack = await exportConfig(recoveryPackForm.exportPassword, client)
+    downloadTextFile(`urestic-recovery-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(pack, null, 2) + '\n', 'application/json;charset=utf-8')
+    recoveryPackForm.exportPassword = ''
+    recoveryPackForm.exportPasswordConfirm = ''
     feedback.value = t('app.configExported')
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
@@ -873,6 +884,12 @@ async function exportSettings() {
 }
 
 function chooseImportFile() {
+  errorMessage.value = ''
+  feedback.value = ''
+  if (!recoveryPackForm.importPassword || recoveryPackForm.importPassword.length < 8) {
+    errorMessage.value = t('app.recoveryImportPasswordRequired')
+    return
+  }
   importFileInput.value?.click()
 }
 
@@ -881,15 +898,20 @@ async function importSettings(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
-  pending.value = 'import-config'
   errorMessage.value = ''
-    feedback.value = ''
+  feedback.value = ''
+  if (!recoveryPackForm.importPassword || recoveryPackForm.importPassword.length < 8) {
+    errorMessage.value = t('app.recoveryImportPasswordRequired')
+    return
+  }
+  pending.value = 'import-config'
   try {
-    const parsed = JSON.parse(await file.text()) as ConfigExport
-    if (parsed.formatVersion >= 2 && !window.confirm(t('app.confirmImportConfig'))) return
-    const result = await importConfig(parsed)
+    const parsed = JSON.parse(await file.text()) as unknown
+    if (!window.confirm(t('app.confirmImportConfig'))) return
+    const result = await importConfig(parsed, recoveryPackForm.importPassword)
     await loadData()
-    applyClientConfig(parsed)
+    applyClientConfig(result.client)
+    recoveryPackForm.importPassword = ''
     feedback.value = t('app.importConfigSuccess', {
       repositoriesCreated: result.repositoriesCreated,
       repositoriesUpdated: result.repositoriesUpdated,
@@ -908,8 +930,7 @@ async function importSettings(event: Event) {
   }
 }
 
-function applyClientConfig(config: ConfigExport) {
-  const client = config.client
+function applyClientConfig(client?: ClientConfigExport) {
   if (!client) return
   if (Array.isArray(client.generatedFiles)) {
     generatedFiles.value = client.generatedFiles.filter((file) => file.name && typeof file.content === 'string').map((file) => ({
@@ -1269,6 +1290,12 @@ onUnmounted(() => {
 
         <article v-if="activeSettingsSection === 'recovery'" class="card settings-panel">
           <div class="section-title"><p class="eyebrow">backup</p><h2>{{ t('app.importExportRecoveryPack') }}</h2><p>{{ t('app.recoveryPackHint') }}</p></div>
+          <div class="field-grid compact">
+            <label>{{ t('app.recoveryExportPassword') }}<input v-model="recoveryPackForm.exportPassword" type="password" minlength="8" autocomplete="new-password" :placeholder="t('app.recoveryPasswordPlaceholder')" /></label>
+            <label>{{ t('app.recoveryExportPasswordConfirm') }}<input v-model="recoveryPackForm.exportPasswordConfirm" type="password" minlength="8" autocomplete="new-password" :placeholder="t('app.recoveryPasswordPlaceholder')" /></label>
+            <label>{{ t('app.recoveryImportPassword') }}<input v-model="recoveryPackForm.importPassword" type="password" minlength="8" autocomplete="current-password" :placeholder="t('app.recoveryPasswordPlaceholder')" /></label>
+          </div>
+          <p class="hint">{{ t('app.recoveryPasswordHint') }}</p>
           <div class="action-row settings-actions">
             <button class="primary" type="button" :disabled="pending === 'export-config'" @click="exportSettings">{{ pending === 'export-config' ? t('app.exporting') : t('app.exportRecoveryJson') }}</button>
             <button class="ghost" type="button" :disabled="pending === 'import-config'" @click="chooseImportFile">{{ pending === 'import-config' ? t('app.importing') : t('app.importRecoveryJson') }}</button>

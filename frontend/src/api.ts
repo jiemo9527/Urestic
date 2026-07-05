@@ -229,6 +229,20 @@ export interface ConfigExport {
   client?: ClientConfigExport
 }
 
+export interface EncryptedRecoveryPack {
+  formatVersion: number
+  kind: string
+  exportedAt: string
+  encryption: {
+    algorithm: string
+    kdf: string
+    iterations: number
+    salt: string
+    nonce: string
+  }
+  payload: string
+}
+
 export interface RepositoryExport {
   name: string
   backend: string
@@ -270,6 +284,7 @@ export interface ConfigImportResult {
   defaultVariablesDeleted: number
   rcloneConfigRestored: boolean
   rcloneConfigRemoved: boolean
+  client?: ClientConfigExport
 }
 
 export async function loginAdmin(username: string, password: string): Promise<LoginResult> {
@@ -395,12 +410,12 @@ export async function changePassword(currentPassword: string, newPassword: strin
   await request<{ changed: boolean }>('/api/v1/settings/password', jsonInit('POST', { currentPassword, newPassword }))
 }
 
-export async function exportConfig(): Promise<ConfigExport> {
-  return request<ConfigExport>('/api/v1/settings/export')
+export async function exportConfig(password: string, client: ClientConfigExport): Promise<EncryptedRecoveryPack> {
+  return request<EncryptedRecoveryPack>('/api/v1/settings/export', jsonInit('POST', { password, client }))
 }
 
-export async function importConfig(config: ConfigExport): Promise<ConfigImportResult> {
-  return request<ConfigImportResult>('/api/v1/settings/import', jsonInit('POST', config))
+export async function importConfig(pack: unknown, password: string): Promise<ConfigImportResult> {
+  return request<ConfigImportResult>('/api/v1/settings/import', jsonInit('POST', { password, pack }))
 }
 
 function jsonInit(method: string, body: unknown): RequestInit {
