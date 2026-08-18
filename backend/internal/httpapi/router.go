@@ -616,9 +616,11 @@ func (s server) deleteSnapshot(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "SNAPSHOT_DELETE_FAILED", err.Error())
 		return
 	}
-	commandCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	// Pruning can scan and rewrite many remote packs, so it needs more time than a snapshot query.
+	commandCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, "restic", "-r", repoURL, "forget", snapshotID)
+	args := forgetSnapshotArgs(repoURL, snapshotID)
+	cmd := exec.CommandContext(commandCtx, args[0], args[1:]...)
 	cmd.Env = env
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -630,7 +632,7 @@ func (s server) deleteSnapshot(c *gin.Context) {
 			message = strings.TrimSpace(stdout.String())
 		}
 		if message == "" {
-			message = "restic forget 执行失败"
+			message = "restic forget/prune 执行失败"
 		}
 		fail(c, http.StatusBadRequest, "SNAPSHOT_DELETE_FAILED", message)
 		return
@@ -1683,6 +1685,10 @@ func validSnapshotID(value string) bool {
 		return false
 	}
 	return true
+}
+
+func forgetSnapshotArgs(repoURL, snapshotID string) []string {
+	return []string{"restic", "-r", repoURL, "forget", "--prune", snapshotID}
 }
 
 func (s server) handleRepositoryError(c *gin.Context, err error) {
