@@ -3,7 +3,7 @@ services:
     image: wanxve0000/urestic:latest
     container_name: urestic
     ports:
-      - "8085:8085"
+      - "127.0.0.1:8085:8085"
     environment:
       - TZ=Asia/Shanghai
     volumes:

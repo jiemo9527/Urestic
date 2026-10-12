@@ -27,7 +27,7 @@ services:
     image: wanxve0000/urestic:latest
     container_name: urestic
     ports:
-      - "8085:8085"
+      - "127.0.0.1:8085:8085"
     environment:
       - TZ=Asia/Shanghai
     volumes:
@@ -43,6 +43,14 @@ services:
 ```text
 http://localhost:8085
 ```
+
+端口默认只绑定 `127.0.0.1`，不对公网开放。Urestic 保存着仓库密码和云存储密钥，且 Docker 发布的端口会绕过 ufw 等主机防火墙，所以不建议改成 `"8085:8085"` 直接暴露。远程服务器上可以用 SSH 隧道访问：
+
+```bash
+ssh -L 8085:127.0.0.1:8085 <server>
+```
+
+保持连接后在本机浏览器打开 `http://localhost:8085`。确实需要公网访问时，请放在带 HTTPS 的反向代理后面，并只把 `127.0.0.1:8085` 作为上游。
 
 默认管理员账号是 `admin`。首次启动如果没有设置管理员密码，Urestic 会自动生成初始密码并写入 `/app/data/admin_password.sha256`，明文初始密码只会打印到容器日志：
 
