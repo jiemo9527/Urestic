@@ -351,8 +351,31 @@ export async function listSnapshots(repositoryId: string): Promise<Snapshot[]> {
   return response.items
 }
 
-export async function removeSnapshot(repositoryId: string, snapshotId: string): Promise<void> {
-  await request<{ deleted: boolean }>(`/api/v1/snapshots/${encodeURIComponent(snapshotId)}?repositoryId=${encodeURIComponent(repositoryId)}`, { method: 'DELETE' })
+export interface SnapshotDeletion {
+  id: string
+  repositoryId: string
+  status: 'verifying' | 'forgetting' | 'pruning' | 'succeeded' | 'failed'
+  count: number
+  forgotten: boolean
+  message?: string
+  createdAt: string
+}
+
+export async function removeSnapshots(repositoryId: string, snapshotIds: string[], clearAll = false, confirmation = ''): Promise<SnapshotDeletion> {
+  return request<SnapshotDeletion>('/api/v1/snapshots/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repositoryId, snapshotIds, clearAll, confirmation })
+  })
+}
+
+export async function latestSnapshotDeletion(repositoryId: string): Promise<SnapshotDeletion | null> {
+  const result = await request<{ job: SnapshotDeletion | null }>(`/api/v1/snapshot-deletions?repositoryId=${encodeURIComponent(repositoryId)}`)
+  return result.job
+}
+
+export async function getSnapshotDeletion(id: string): Promise<SnapshotDeletion> {
+  return request<SnapshotDeletion>(`/api/v1/snapshot-deletions/${encodeURIComponent(id)}`)
 }
 
 export async function getInsights(): Promise<InsightSummary> {

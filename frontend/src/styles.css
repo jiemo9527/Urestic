@@ -456,6 +456,11 @@ button.logo-mark { padding: 0; }
 .snapshot-card { display: grid; gap: 14px; padding: 16px; }
 .snapshot-tools { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; }
 .page-indicator { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem; }
+.snapshot-selectable-row { display: flex; align-items: center; gap: 8px; padding-left: 12px; }
+.snapshot-selectable-row > input { flex: 0 0 auto; width: 18px; height: 18px; }
+.snapshot-selectable-row > .snapshot-row-main { min-width: 0; flex: 1; }
+.snapshot-bulk-actions { flex-wrap: wrap; }
+button.danger { color: #ef4444; border-color: #ef444466; }
 .snapshot-list { display: grid; gap: 8px; }
 .snapshot-row { border: 1px solid var(--border-dim); border-radius: 10px; overflow: hidden; background: var(--bg-panel); }
 .snapshot-row-main {

@@ -26,7 +26,10 @@ import {
   logoutAdmin,
   removeNotification,
   removeRepository,
-  removeSnapshot,
+  removeSnapshots,
+  getSnapshotDeletion,
+  latestSnapshotDeletion,
+  type SnapshotDeletion,
   testNotification,
   updateRcloneBinary,
   updateNotification,
@@ -80,6 +83,13 @@ const editingNotificationId = ref('')
 const snapshotSearch = ref('')
 const snapshotPage = ref(1)
 const expandedSnapshotIds = ref<Set<string>>(new Set())
+const selectedSnapshotIds = ref<Set<string>>(new Set())
+const snapshotDeletion = ref<SnapshotDeletion | null>(null)
+const snapshotDeleteSubmitting = ref(false)
+const snapshotDeleteBusy = computed(() => snapshotDeleteSubmitting.value || !!snapshotDeletion.value && !['succeeded', 'failed'].includes(snapshotDeletion.value.status))
+const snapshotTaskMessage = ref('')
+const snapshotTaskError = ref('')
+let snapshotDeletionTimer: ReturnType<typeof window.setTimeout> | undefined
 const activeSettingsSection = ref<SettingSection>('system')
 const logEntries = ref<AppLogEntry[]>([])
 const logKeyword = ref('')
@@ -550,14 +560,31 @@ async function deleteRepository(item: Repository) {
 }
 
 async function openRepositorySnapshots(repository: Repository) {
+  if (snapshotDeleteBusy.value) return
   activeRepositoryModal.value = repository
+  selectedSnapshotIds.value = new Set()
+  snapshotTaskMessage.value = ''
+  snapshotTaskError.value = ''
+  snapshotDeletion.value = null
   snapshotSearch.value = ''
   snapshotPage.value = 1
   expandedSnapshotIds.value = new Set()
+  try {
+    const job = await latestSnapshotDeletion(repository.id)
+    if (job) {
+      snapshotDeletion.value = job
+      sessionStorage.setItem('urestic.snapshotDeletion', JSON.stringify(job))
+      if (snapshotDeleteBusy.value) { void pollSnapshotDeletion(); return }
+    }
+  } catch (error) {
+    snapshotTaskError.value = error instanceof Error ? error.message : String(error)
+    return
+  }
   await querySnapshots(repository.id)
 }
 
 function closeRepositorySnapshots() {
+  if (snapshotDeleteBusy.value) return
   activeRepositoryModal.value = null
 }
 
@@ -745,6 +772,8 @@ async function querySnapshots(repositoryId = snapshotForm.repositoryId) {
   feedback.value = ''
   try {
     snapshots.value = await listSnapshots(repositoryId)
+    const available = new Set(snapshots.value.map((item) => item.id))
+    selectedSnapshotIds.value = new Set([...selectedSnapshotIds.value].filter((id) => available.has(id)))
     snapshotPage.value = 1
   } catch (error) {
     snapshots.value = []
@@ -754,21 +783,83 @@ async function querySnapshots(repositoryId = snapshotForm.repositoryId) {
   }
 }
 
-async function deleteSnapshot(snapshot: Snapshot) {
-  if (!snapshotForm.repositoryId) return
-  if (!window.confirm(t('app.confirmDeleteSnapshot', { id: snapshot.shortId || snapshot.id }))) return
-  pending.value = `delete-snapshot-${snapshot.id}`
-  errorMessage.value = ''
-  feedback.value = ''
+function toggleSnapshotSelection(id: string) {
+  const selected = new Set(selectedSnapshotIds.value)
+  if (selected.has(id)) selected.delete(id)
+  else selected.add(id)
+  selectedSnapshotIds.value = selected
+}
+
+function selectFilteredSnapshots() {
+  selectedSnapshotIds.value = new Set([...selectedSnapshotIds.value, ...filteredSnapshots.value.map((item) => item.id)])
+}
+
+async function pollSnapshotDeletion() {
+  const job = snapshotDeletion.value
+  if (!job) return
   try {
-    await removeSnapshot(snapshotForm.repositoryId, snapshot.id)
-    snapshots.value = snapshots.value.filter((item) => item.id !== snapshot.id)
-    snapshotPage.value = Math.min(snapshotPage.value, snapshotPageCount.value)
-    feedback.value = t('app.snapshotDeleted')
+    const result = await getSnapshotDeletion(job.id)
+    snapshotDeletion.value = result
+    snapshotTaskError.value = ''
+    snapshotTaskMessage.value = t(`app.snapshotTask_${result.status}`, { count: result.count })
+    if (result.status === 'succeeded' || result.status === 'failed') {
+      sessionStorage.removeItem('urestic.snapshotDeletion')
+      if (result.message) snapshotTaskError.value = result.message
+      // Forget may have succeeded even when prune failed. Always read the actual list.
+      try {
+        const items = await listSnapshots(result.repositoryId)
+        if (snapshotForm.repositoryId === result.repositoryId) {
+          snapshots.value = items
+          selectedSnapshotIds.value = new Set()
+          snapshotPage.value = Math.min(snapshotPage.value, snapshotPageCount.value)
+        }
+      } catch (error) {
+        snapshotTaskError.value += ` ${error instanceof Error ? error.message : String(error)}`
+      }
+      return
+    }
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error)
+    snapshotTaskError.value = error instanceof Error ? error.message : String(error)
+    if (error instanceof ApiRequestError && error.status === 404) {
+      snapshotDeletion.value = null
+      sessionStorage.removeItem('urestic.snapshotDeletion')
+      return
+    }
+  }
+  snapshotDeletionTimer = window.setTimeout(() => void pollSnapshotDeletion(), 2000)
+}
+
+async function deleteSnapshot(snapshot: Snapshot) {
+  await deleteSnapshotSelection([snapshot.id])
+}
+
+async function deleteSnapshotSelection(ids = [...selectedSnapshotIds.value], clearAll = false) {
+  const repository = activeSnapshotRepository.value
+  if (!repository || snapshotDeleteBusy.value || !ids.length) return
+  clearAll = clearAll || ids.length === snapshots.value.length
+  if (!window.confirm(t(clearAll ? 'app.confirmClearSnapshots' : 'app.confirmDeleteSnapshots', { name: repository.name, count: ids.length }))) return
+  let confirmation = ''
+  if (clearAll) {
+    const value = window.prompt(t('app.typeRepositoryName', { name: repository.name }))
+    if (value === null) return
+    if (value !== repository.name) {
+      snapshotTaskError.value = t('app.repositoryNameMismatch')
+      return
+    }
+    confirmation = value
+  }
+  snapshotDeleteSubmitting.value = true
+  snapshotTaskError.value = ''
+  snapshotTaskMessage.value = ''
+  try {
+    snapshotDeletion.value = await removeSnapshots(repository.id, ids, clearAll, confirmation)
+    sessionStorage.setItem('urestic.snapshotDeletion', JSON.stringify(snapshotDeletion.value))
+    snapshotTaskMessage.value = t('app.snapshotTask_verifying')
+    void pollSnapshotDeletion()
+  } catch (error) {
+    snapshotTaskError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    pending.value = ''
+    snapshotDeleteSubmitting.value = false
   }
 }
 
@@ -989,6 +1080,22 @@ onMounted(async () => {
   }
   try {
     await initializeAuth()
+    const savedJob = sessionStorage.getItem('urestic.snapshotDeletion')
+    if (authenticated.value && savedJob) {
+      try {
+        const job = JSON.parse(savedJob) as SnapshotDeletion
+        const repository = repositories.value.find((item) => item.id === job.repositoryId)
+        if (repository && typeof job.id === 'string') {
+          await openRepositorySnapshots(repository)
+          if (!snapshotDeleteBusy.value) {
+            snapshotDeletion.value = job
+            void pollSnapshotDeletion()
+          }
+        }
+      } catch {
+        sessionStorage.removeItem('urestic.snapshotDeletion')
+      }
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -997,6 +1104,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  if (snapshotDeletionTimer) window.clearTimeout(snapshotDeletionTimer)
   window.removeEventListener('popstate', handlePopState)
   if (logRefreshTimer) {
     window.clearInterval(logRefreshTimer)
@@ -1333,7 +1441,7 @@ onUnmounted(() => {
         <section class="modal-card snapshot-modal">
           <header class="modal-head">
             <div class="section-title"><p class="eyebrow">snapshots</p><h2>{{ activeSnapshotRepository?.name }}</h2><p>{{ activeSnapshotRepository?.repoUrl }}</p></div>
-            <div class="action-row"><button class="primary" type="button" :disabled="pending === 'snapshots'" @click="querySnapshots()">{{ pending === 'snapshots' ? t('app.querying') : t('app.refresh') }}</button><button class="ghost" type="button" @click="closeRepositorySnapshots">{{ t('app.close') }}</button></div>
+            <div class="action-row"><button class="primary" type="button" :disabled="pending === 'snapshots' || snapshotDeleteBusy" @click="querySnapshots()">{{ pending === 'snapshots' ? t('app.querying') : t('app.refresh') }}</button><button class="ghost" type="button" :disabled="snapshotDeleteBusy" @click="closeRepositorySnapshots">{{ t('app.close') }}</button></div>
           </header>
           <div class="snapshot-summary">
             <span>{{ t('app.snapshotCountSummary', { filtered: filteredSnapshots.length, total: snapshots.length }) }}</span>
@@ -1343,8 +1451,20 @@ onUnmounted(() => {
             <input :value="snapshotSearch" :placeholder="t('app.snapshotSearchPlaceholder')" @input="setSnapshotSearch(($event.target as HTMLInputElement).value)" />
             <div class="action-row"><button class="ghost" type="button" :disabled="snapshotPage <= 1" @click="changeSnapshotPage(-1)">{{ t('app.previousPage') }}</button><span class="page-indicator">{{ snapshotPage }} / {{ snapshotPageCount }}</span><button class="ghost" type="button" :disabled="snapshotPage >= snapshotPageCount" @click="changeSnapshotPage(1)">{{ t('app.nextPage') }}</button></div>
           </div>
+          <div class="snapshot-bulk-actions action-row">
+            <button class="ghost" type="button" :disabled="snapshotDeleteBusy || !filteredSnapshots.length" @click="selectFilteredSnapshots">{{ t('app.selectFilteredSnapshots') }}</button>
+            <button class="ghost" type="button" :disabled="snapshotDeleteBusy || !selectedSnapshotIds.size" @click="selectedSnapshotIds = new Set()">{{ t('app.clearSnapshotSelection') }}</button>
+            <span>{{ t('app.selectedSnapshots', { count: selectedSnapshotIds.size }) }}</span>
+            <button class="ghost danger" type="button" :disabled="snapshotDeleteBusy || pending === 'snapshots' || !selectedSnapshotIds.size" @click="deleteSnapshotSelection()">{{ t('app.deleteSelectedSnapshots') }}</button>
+            <button class="ghost danger" type="button" :disabled="snapshotDeleteBusy || pending === 'snapshots' || !snapshots.length" @click="deleteSnapshotSelection(snapshots.map(item => item.id), true)">{{ t('app.clearRepositorySnapshots') }}</button>
+          </div>
+          <p class="hint">{{ t('app.snapshotDeletionHint') }}</p>
+          <p v-if="snapshotTaskMessage" class="hint" role="status">{{ snapshotTaskMessage }}</p>
+          <p v-if="snapshotTaskError" class="warning" role="alert">{{ snapshotTaskError }}</p>
           <section class="snapshot-list">
             <article v-for="snapshot in pagedSnapshots" :key="snapshot.id" class="snapshot-row">
+              <div class="snapshot-selectable-row">
+                <input type="checkbox" :checked="selectedSnapshotIds.has(snapshot.id)" :disabled="snapshotDeleteBusy" :aria-label="t('app.selectSnapshot', { id: snapshot.shortId || snapshot.id })" @change="toggleSnapshotSelection(snapshot.id)" />
               <button class="snapshot-row-main" type="button" @click="toggleSnapshotExpanded(snapshot)">
                 <span class="snapshot-id">{{ snapshot.shortId || snapshot.id }}</span>
                 <span>{{ formatDate(snapshot.time) }}</span>
@@ -1352,10 +1472,11 @@ onUnmounted(() => {
                 <span>{{ (snapshot.tags || []).join(', ') || t('app.noTags') }}</span>
                 <span>{{ snapshot.paths[0] || '-' }}</span>
               </button>
+              </div>
               <div v-if="snapshotMatchesExpanded(snapshot)" class="snapshot-expanded">
                 <div class="card-head snapshot-card-head">
                   <div><p class="eyebrow">snapshot</p><h3>{{ snapshot.shortId || snapshot.id }}</h3></div>
-                  <button class="ghost" type="button" :disabled="pending === `delete-snapshot-${snapshot.id}`" @click="deleteSnapshot(snapshot)">{{ pending === `delete-snapshot-${snapshot.id}` ? t('app.deleting') : t('app.delete') }}</button>
+                  <button class="ghost danger" type="button" :disabled="snapshotDeleteBusy || pending === 'snapshots'" @click="deleteSnapshot(snapshot)">{{ t('app.delete') }}</button>
                 </div>
                 <dl class="snapshot-meta">
                   <div><dt>{{ t('app.time') }}</dt><dd>{{ formatDate(snapshot.time) }}</dd></div>

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/smtp"
@@ -31,12 +32,13 @@ import (
 )
 
 type server struct {
-	cfg      config.Config
-	repos    *repositories.Store
-	notify   *notifications.Store
-	settings *settings.Store
-	secrets  *secrets.Manager
-	auth     *auth.Manager
+	cfg       config.Config
+	repos     *repositories.Store
+	notify    *notifications.Store
+	settings  *settings.Store
+	secrets   *secrets.Manager
+	auth      *auth.Manager
+	deletions *snapshotDeletions
 }
 
 type loginRequest struct {
@@ -144,7 +146,7 @@ type resticSnapshot struct {
 }
 
 func NewRouter(cfg config.Config, repoStore *repositories.Store, notificationStore *notifications.Store, settingsStore *settings.Store, secretManager *secrets.Manager, authManager *auth.Manager) *gin.Engine {
-	s := server{cfg: cfg, repos: repoStore, notify: notificationStore, settings: settingsStore, secrets: secretManager, auth: authManager}
+	s := server{cfg: cfg, repos: repoStore, notify: notificationStore, settings: settingsStore, secrets: secretManager, auth: authManager, deletions: newSnapshotDeletions()}
 	r := gin.New()
 	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: []string{"/api/v1/settings/logs"}}), gin.Recovery())
 	if err := r.SetTrustedProxies(nil); err != nil {
@@ -179,6 +181,9 @@ func NewRouter(cfg config.Config, repoStore *repositories.Store, notificationSto
 		protected.POST("/scripts/generate", s.generateScript)
 		protected.GET("/snapshots", s.listSnapshots)
 		protected.DELETE("/snapshots/:id", s.deleteSnapshot)
+		protected.POST("/snapshots/delete", s.deleteSnapshots)
+		protected.GET("/snapshot-deletions", s.latestSnapshotDeletion)
+		protected.GET("/snapshot-deletions/:id", s.snapshotDeletionStatus)
 		protected.GET("/insights", s.insights)
 		protected.GET("/notifications/templates", s.notificationTemplates)
 		protected.GET("/notifications", s.listNotifications)
@@ -596,49 +601,13 @@ func (s server) listSnapshots(c *gin.Context) {
 }
 
 func (s server) deleteSnapshot(c *gin.Context) {
-	repositoryID := strings.TrimSpace(c.Query("repositoryId"))
-	if repositoryID == "" {
-		fail(c, http.StatusBadRequest, "REPOSITORY_REQUIRED", "请选择仓库。")
-		return
-	}
-	snapshotID := strings.TrimSpace(c.Param("id"))
-	if !validSnapshotID(snapshotID) {
-		fail(c, http.StatusBadRequest, "INVALID_SNAPSHOT_ID", "快照 ID 格式不正确。")
-		return
-	}
-	repository, err := s.repos.GetPrivate(c.Request.Context(), repositoryID)
-	if err != nil {
-		s.handleRepositoryError(c, err)
-		return
-	}
-	repoURL, env, err := s.resticAccess(c.Request.Context(), repository)
-	if err != nil {
-		fail(c, http.StatusBadRequest, "SNAPSHOT_DELETE_FAILED", err.Error())
-		return
-	}
-	// Pruning can scan and rewrite many remote packs, so it needs more time than a snapshot query.
-	commandCtx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
-	defer cancel()
-	args := forgetSnapshotArgs(repoURL, snapshotID)
-	cmd := exec.CommandContext(commandCtx, args[0], args[1:]...)
-	cmd.Env = env
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = strings.TrimSpace(stdout.String())
-		}
-		if message == "" {
-			message = "restic forget/prune 执行失败"
-		}
-		fail(c, http.StatusBadRequest, "SNAPSHOT_DELETE_FAILED", message)
-		return
-	}
-	applog.Operation("delete_snapshot", "repository", repository.Name, "snapshot", snapshotID)
-	ok(c, gin.H{"deleted": true})
+	// Keep the legacy route, but use the same asynchronous deletion path.
+	body, _ := json.Marshal(deleteSnapshotsRequest{
+		RepositoryID: c.Query("repositoryId"),
+		SnapshotIDs:  []string{c.Param("id")},
+	})
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	s.deleteSnapshots(c)
 }
 
 func (s server) insights(c *gin.Context) {
